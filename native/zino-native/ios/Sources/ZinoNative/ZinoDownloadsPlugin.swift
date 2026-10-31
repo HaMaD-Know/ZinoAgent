@@ -60,6 +60,8 @@ public class ZinoDownloadsPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionDownloa
         let expectedSize = call.getDouble("expectedSize").map { Int64($0) }
         let sha = call.getString("sha256")?.lowercased()
         let headers = call.getObject("headers") ?? [:]
+        // Optional Keychain account (e.g. a Hugging Face token for gated repos): injected natively.
+        let authSecret = call.getString("authAccount").flatMap { ZinoKeychain.get(account: $0) }
         delegateQueue.addOperation {
             do {
                 let destURL = try ZinoPaths.resolve(dest)
@@ -83,6 +85,7 @@ public class ZinoDownloadsPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionDownloa
                 } else {
                     var req = URLRequest(url: url)
                     for (k, v) in headers { if let s = v as? String { req.setValue(s, forHTTPHeaderField: k) } }
+                    if let authSecret { req.setValue("Bearer \(authSecret)", forHTTPHeaderField: "Authorization") }
                     task = self.session.downloadTask(with: req)
                 }
                 var job = Job(id: id, dest: dest, expectedSha256: sha, expectedSize: expectedSize)

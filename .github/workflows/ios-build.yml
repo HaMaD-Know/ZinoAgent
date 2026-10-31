@@ -114,7 +114,11 @@ jobs:
             -derivedDataPath "$DERIVED" \
             -clonedSourcePackagesDirPath "$DERIVED/SourcePackages" \
             CODE_SIGNING_ALLOWED=NO 2>&1 | tee simulator-build.log | grep -E "error:|warning: .*Zino|BUILD (SUCCEEDED|FAILED)|\*\* " || true
-          test -d "$DERIVED/Build/Products/Debug-iphonesimulator/App.app"
+          if ! grep -q "\*\* BUILD SUCCEEDED \*\*" simulator-build.log; then
+            echo "::error title=Simulator build failed::See errors above and the xcodebuild-logs artifact."
+            grep -E "error:" simulator-build.log | head -50
+            exit 1
+          fi
           cd "$DERIVED/Build/Products/Debug-iphonesimulator" && zip -qry "$GITHUB_WORKSPACE/ZinoAgent-simulator.zip" App.app
 
       - name: Upload simulator build
@@ -136,8 +140,12 @@ jobs:
             -clonedSourcePackagesDirPath "$DERIVED/SourcePackages" \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" 2>&1 \
             | tee device-build.log | grep -E "error:|BUILD (SUCCEEDED|FAILED)|\*\* " || true
+          if ! grep -q "\*\* BUILD SUCCEEDED \*\*" device-build.log; then
+            echo "::error title=Device build failed::See errors above and the xcodebuild-logs artifact."
+            grep -E "error:" device-build.log | head -50
+            exit 1
+          fi
           APP="$DERIVED/Build/Products/Release-iphoneos/App.app"
-          test -d "$APP"
           rm -rf Payload && mkdir Payload && cp -R "$APP" Payload/
           zip -qry ZinoAgent-unsigned.ipa Payload
 
@@ -203,7 +211,11 @@ jobs:
             CODE_SIGN_IDENTITY="Apple Development" \
             PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" "${EXTRA[@]}" 2>&1 \
             | tee archive.log | grep -E "error:|ARCHIVE (SUCCEEDED|FAILED)|\*\* " || true
-          test -d "$RUNNER_TEMP/ZinoAgent.xcarchive"
+          if ! grep -q "\*\* ARCHIVE SUCCEEDED \*\*" archive.log; then
+            echo "::error title=Archive failed::See errors above and the xcodebuild-logs artifact."
+            grep -E "error:" archive.log | head -50
+            exit 1
+          fi
           # Distribution profiles need a distribution identity.
           if [ "$EXPORT_METHOD" != "development" ]; then SIGN_CERT="Apple Distribution"; else SIGN_CERT="Apple Development"; fi
           cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
