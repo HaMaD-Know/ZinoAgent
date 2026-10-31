@@ -29,7 +29,8 @@ export function classifyComplexity(prompt: string, opts: { attachments?: number;
   const reasons: string[] = [];
   if (words > 250) { score += 2; reasons.push('long request'); } else if (words > 60) { score += 1; reasons.push('detailed request'); }
   if (/```|\bfunction\b|\bclass\b|=>|\bimport\b|\bdef\b/.test(p)) { score += 2; reasons.push('code'); }
-  if (/\b(analy[sz]e|compare|design|architect|prove|derive|debug|optimi[sz]e|step[- ]by[- ]step|plan|trade-?offs?|evaluate|refactor|why does|root cause)\b/i.test(p)) { score += 2; reasons.push('reasoning task'); }
+  const reasoningTerms = new Set((p.match(/\b(analy[sz]e|compare|design|architect\w*|prove|derive|debug|optimi[sz]e|step[- ]by[- ]step|plan|trade-?offs?|evaluate|refactor|why does|root cause)\b/gi) ?? []).map((t) => t.toLowerCase()));
+  if (reasoningTerms.size) { score += 1 + Math.min(3, reasoningTerms.size); reasons.push('reasoning task'); }
   if ((p.match(/\?/g) ?? []).length >= 3) { score += 1; reasons.push('several questions'); }
   if ((opts.attachments ?? 0) > 0) { score += 1; reasons.push('attachments'); }
   if (/\b(organi[sz]e|rename|move|find|duplicates?)\b/i.test(p) && opts.toolsAvailable) { score += 1; reasons.push('file operations'); }

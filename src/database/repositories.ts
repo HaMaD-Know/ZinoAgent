@@ -388,14 +388,14 @@ const toFileOp = (r: Row): FileOperation => ({
 
 export const fileOpsRepo = {
   async list(limit = 200): Promise<FileOperation[]> {
-    return (await db().query<Row>('SELECT * FROM file_operations ORDER BY created_at DESC LIMIT ?', [limit])).map(toFileOp);
+    return (await db().query<Row>('SELECT * FROM file_operations ORDER BY created_at DESC, rowid DESC LIMIT ?', [limit])).map(toFileOp);
   },
   async get(id: string) {
     const [r] = await db().query<Row>('SELECT * FROM file_operations WHERE id = ?', [id]);
     return r ? toFileOp(r) : null;
   },
   async group(groupId: string) {
-    return (await db().query<Row>('SELECT * FROM file_operations WHERE group_id = ? ORDER BY created_at DESC', [groupId])).map(toFileOp);
+    return (await db().query<Row>('SELECT * FROM file_operations WHERE group_id = ? ORDER BY created_at DESC, rowid DESC', [groupId])).map(toFileOp);
   },
   async insert(op: FileOperation) {
     await db().run(
