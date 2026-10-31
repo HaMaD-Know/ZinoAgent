@@ -1,0 +1,23 @@
+node_modules/
+dist/
+.build/
+coverage/
+*.log
+.DS_Store
+# Generated native artifacts
+native/zino-native/ios/Frameworks/llama.xcframework/
+ios/App/App/public/
+ios/App/App/capacitor.config.json
+ios/App/App/config.xml
+ios/App/CapApp-SPM/.build/
+ios/DerivedData/
+ios/build/
+*.xcuserstate
+xcuserdata/
+# Never commit signing material or secrets
+*.p12
+*.mobileprovision
+*.cer
+*.key
+.env
+.env.*
