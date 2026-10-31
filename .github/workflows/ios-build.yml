@@ -1,0 +1,245 @@
+name: iOS build
+
+# Builds ZinoAgent on GitHub's macOS runners so it can be developed from Windows.
+#
+#  * web            – typecheck, unit tests and production web build (Linux, fast feedback)
+#  * ios            – llama.xcframework (cached) + Capacitor sync + Xcode builds:
+#      simulator        unsigned iOS Simulator .app (compile check; NOT installable on an iPad)
+#      unsigned-device  unsigned iPadOS .ipa (must be re-signed, e.g. with Sideloadly/AltStore)
+#      signed-device    signed .ipa for your iPad (needs the signing secrets, see README)
+on:
+  push:
+    branches: ['**']
+    paths-ignore: ['**.md', 'docs/**']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      build_mode:
+        description: 'What to build'
+        type: choice
+        default: all
+        options: [all, simulator, unsigned-device, signed-device]
+
+concurrency:
+  group: ios-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '22'
+  LLAMA_CPP_TAG: b12020
+
+jobs:
+  web:
+    name: Web – typecheck, test, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npx vite build
+      - uses: actions/upload-artifact@v7
+        with:
+          name: web-dist
+          path: dist
+          retention-days: 7
+
+  ios:
+    name: iOS – ${{ github.event.inputs.build_mode || 'all' }}
+    needs: web
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      BUILD_MODE: ${{ github.event.inputs.build_mode || 'all' }}
+      HAS_SIGNING: ${{ secrets.IOS_CERTIFICATE_P12_BASE64 != '' && secrets.IOS_PROVISIONING_PROFILE_BASE64 != '' }}
+      DERIVED: ${{ github.workspace }}/ios/DerivedData
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Select newest Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_*.app | grep -v beta | sort -V | tail -1)
+          echo "Using $XCODE"
+          sudo xcode-select -s "$XCODE/Contents/Developer"
+          xcodebuild -version
+          swift --version
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install JS dependencies (lockfile)
+        run: npm ci
+
+      - name: Build web app
+        run: npm run build
+
+      - name: Cache llama.xcframework
+        id: llama-cache
+        uses: actions/cache@v5
+        with:
+          path: native/zino-native/ios/Frameworks/llama.xcframework
+          key: llama-xcframework-${{ env.LLAMA_CPP_TAG }}-${{ hashFiles('scripts/build-llama-xcframework.sh') }}
+
+      - name: Build llama.xcframework (llama.cpp ${{ env.LLAMA_CPP_TAG }}, Metal, device + simulator)
+        if: steps.llama-cache.outputs.cache-hit != 'true'
+        run: |
+          brew list cmake >/dev/null 2>&1 || brew install cmake
+          bash scripts/build-llama-xcframework.sh
+
+      - name: Capacitor sync
+        run: npx cap sync ios
+
+      - name: Resolve Swift packages
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project ios/App/App.xcodeproj -scheme App \
+            -clonedSourcePackagesDirPath "$DERIVED/SourcePackages"
+
+      - name: Build for iOS Simulator (unsigned, compile check)
+        if: env.BUILD_MODE == 'all' || env.BUILD_MODE == 'simulator'
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project ios/App/App.xcodeproj -scheme App -configuration Debug \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$DERIVED" \
+            -clonedSourcePackagesDirPath "$DERIVED/SourcePackages" \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee simulator-build.log | grep -E "error:|warning: .*Zino|BUILD (SUCCEEDED|FAILED)|\*\* " || true
+          test -d "$DERIVED/Build/Products/Debug-iphonesimulator/App.app"
+          cd "$DERIVED/Build/Products/Debug-iphonesimulator" && zip -qry "$GITHUB_WORKSPACE/ZinoAgent-simulator.zip" App.app
+
+      - name: Upload simulator build
+        if: env.BUILD_MODE == 'all' || env.BUILD_MODE == 'simulator'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ZinoAgent-simulator-app (not installable on iPad)
+          path: ZinoAgent-simulator.zip
+          retention-days: 14
+
+      - name: Build unsigned device IPA
+        if: env.BUILD_MODE == 'all' || env.BUILD_MODE == 'unsigned-device'
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project ios/App/App.xcodeproj -scheme App -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath "$DERIVED" \
+            -clonedSourcePackagesDirPath "$DERIVED/SourcePackages" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" 2>&1 \
+            | tee device-build.log | grep -E "error:|BUILD (SUCCEEDED|FAILED)|\*\* " || true
+          APP="$DERIVED/Build/Products/Release-iphoneos/App.app"
+          test -d "$APP"
+          rm -rf Payload && mkdir Payload && cp -R "$APP" Payload/
+          zip -qry ZinoAgent-unsigned.ipa Payload
+
+      - name: Upload unsigned device IPA
+        if: env.BUILD_MODE == 'all' || env.BUILD_MODE == 'unsigned-device'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ZinoAgent-unsigned-ipa (re-sign before installing)
+          path: ZinoAgent-unsigned.ipa
+          retention-days: 14
+
+      - name: Signing not configured
+        if: (env.BUILD_MODE == 'all' || env.BUILD_MODE == 'signed-device') && env.HAS_SIGNING != 'true'
+        run: |
+          echo "::notice title=Signed IPA skipped::IOS_CERTIFICATE_P12_BASE64 / IOS_PROVISIONING_PROFILE_BASE64 secrets are not set. See README › 'Signed iPad builds'."
+
+      - name: Install signing certificate and profile
+        if: (env.BUILD_MODE == 'all' || env.BUILD_MODE == 'signed-device') && env.HAS_SIGNING == 'true'
+        env:
+          P12_BASE64: ${{ secrets.IOS_CERTIFICATE_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          echo "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          echo "$PROFILE_BASE64" | base64 --decode > "$RUNNER_TEMP/profile.mobileprovision"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychain -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          security cms -D -i "$RUNNER_TEMP/profile.mobileprovision" > "$RUNNER_TEMP/profile.plist"
+          UUID=$(/usr/libexec/PlistBuddy -c 'Print UUID' "$RUNNER_TEMP/profile.plist")
+          NAME=$(/usr/libexec/PlistBuddy -c 'Print Name' "$RUNNER_TEMP/profile.plist")
+          TEAM=$(/usr/libexec/PlistBuddy -c 'Print TeamIdentifier:0' "$RUNNER_TEMP/profile.plist")
+          BUNDLE=$(/usr/libexec/PlistBuddy -c 'Print Entitlements:application-identifier' "$RUNNER_TEMP/profile.plist" | sed "s/^$TEAM\.//")
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          cp "$RUNNER_TEMP/profile.mobileprovision" "$HOME/Library/MobileDevice/Provisioning Profiles/$UUID.mobileprovision"
+          echo "PROFILE_NAME=$NAME" >> "$GITHUB_ENV"
+          echo "TEAM_ID=$TEAM" >> "$GITHUB_ENV"
+          echo "BUNDLE_ID=$BUNDLE" >> "$GITHUB_ENV"
+          echo "Profile '$NAME' for $BUNDLE (team $TEAM)"
+
+      - name: Archive and export signed IPA
+        if: (env.BUILD_MODE == 'all' || env.BUILD_MODE == 'signed-device') && env.HAS_SIGNING == 'true'
+        env:
+          EXPORT_METHOD: ${{ vars.IOS_EXPORT_METHOD || 'development' }}
+          INCREASED_MEMORY: ${{ vars.IOS_INCREASED_MEMORY_LIMIT || 'false' }}
+        run: |
+          set -o pipefail
+          EXTRA=()
+          if [ "$INCREASED_MEMORY" = "true" ]; then EXTRA+=(CODE_SIGN_ENTITLEMENTS=App/App.entitlements); fi
+          xcodebuild archive \
+            -project ios/App/App.xcodeproj -scheme App -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$DERIVED" \
+            -clonedSourcePackagesDirPath "$DERIVED/SourcePackages" \
+            -archivePath "$RUNNER_TEMP/ZinoAgent.xcarchive" \
+            CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="$TEAM_ID" \
+            PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
+            CODE_SIGN_IDENTITY="Apple Development" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" "${EXTRA[@]}" 2>&1 \
+            | tee archive.log | grep -E "error:|ARCHIVE (SUCCEEDED|FAILED)|\*\* " || true
+          test -d "$RUNNER_TEMP/ZinoAgent.xcarchive"
+          # Distribution profiles need a distribution identity.
+          if [ "$EXPORT_METHOD" != "development" ]; then SIGN_CERT="Apple Distribution"; else SIGN_CERT="Apple Development"; fi
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>${EXPORT_METHOD}</string>
+            <key>teamID</key><string>${TEAM_ID}</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>signingCertificate</key><string>${SIGN_CERT}</string>
+            <key>provisioningProfiles</key><dict><key>${BUNDLE_ID}</key><string>${PROFILE_NAME}</string></dict>
+            <key>compileBitcode</key><false/>
+            <key>stripSwiftSymbols</key><true/>
+          </dict></plist>
+          PLIST
+          xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/ZinoAgent.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" -exportPath "$RUNNER_TEMP/export"
+          cp "$RUNNER_TEMP"/export/*.ipa ZinoAgent-signed.ipa
+
+      - name: Upload signed IPA
+        if: (env.BUILD_MODE == 'all' || env.BUILD_MODE == 'signed-device') && env.HAS_SIGNING == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ZinoAgent-signed-ipa
+          path: ZinoAgent-signed.ipa
+          retention-days: 30
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: xcodebuild-logs
+          path: '*.log'
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Clean up signing keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true

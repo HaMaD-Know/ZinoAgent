@@ -1,0 +1,16 @@
+{
+  "name": "zino-native",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ZinoAgent native iOS plugins (Swift): database, keychain, secure HTTP, files, llama.cpp, Core ML diffusion, downloads, resources.",
+  "main": "index.js",
+  "files": ["ios/Sources", "Package.swift", "index.js"],
+  "capacitor": {
+    "ios": {
+      "src": "ios"
+    }
+  },
+  "peerDependencies": {
+    "@capacitor/core": "^8.0.0"
+  }
+}

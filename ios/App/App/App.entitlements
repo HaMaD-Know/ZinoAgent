@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Lets iPadOS grant ZinoAgent a larger memory limit for local models.
+	     Applied only to signed builds when IOS_INCREASED_MEMORY_LIMIT=true (the App ID must
+	     have the "Increased Memory Limit" capability enabled in the Apple Developer portal). -->
+	<key>com.apple.developer.kernel.increased-memory-limit</key>
+	<true/>
+</dict>
+</plist>
