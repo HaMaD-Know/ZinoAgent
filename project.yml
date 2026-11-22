@@ -1,0 +1,139 @@
+name: ZinoAgent
+options:
+  bundleIdPrefix: com.zinoagent
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+packages:
+  ZinoLlama:
+    path: Packages/ZinoLlama
+  ZIPFoundation:
+    url: https://github.com/weichsel/ZIPFoundation.git
+    from: 0.9.19
+  StableDiffusion:
+    url: https://github.com/apple/ml-stable-diffusion.git
+    exactVersion: 1.1.1
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    MARKETING_VERSION: "2.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
+    ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+
+targets:
+  ZinoAgent:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: ZinoAgent/App
+      - path: ZinoAgent/Core
+      - path: ZinoAgent/AI
+      - path: ZinoAgent/Services
+      - path: ZinoAgent/Features
+      - path: ZinoAgent/Resources/Assets.xcassets
+      - path: ZinoAgent/Resources/Localizations
+    info:
+      path: ZinoAgent/Resources/Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zinoagent.app
+        PRODUCT_NAME: ZinoAgent
+        INFOPLIST_FILE: ZinoAgent/Resources/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        OTHER_LDFLAGS:
+          - "$(inherited)"
+          - "-lc++"
+          - "-lsqlite3"
+      configs:
+        Debug:
+          ENABLE_TESTABILITY: YES
+          SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+        Release:
+          SWIFT_OPTIMIZATION_LEVEL: "-O"
+    dependencies:
+      - package: ZinoLlama
+        product: llama
+      - package: ZIPFoundation
+        product: ZIPFoundation
+      - package: StableDiffusion
+        product: StableDiffusion
+      - sdk: Metal.framework
+      - sdk: Accelerate.framework
+      - sdk: CoreML.framework
+      - sdk: PDFKit.framework
+      - sdk: SceneKit.framework
+      - sdk: ModelIO.framework
+      - sdk: NaturalLanguage.framework
+      - sdk: Photos.framework
+      - sdk: Security.framework
+      - sdk: BackgroundTasks.framework
+
+  ZinoAgentUnitTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: ZinoAgent/Tests/UnitTests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zinoagent.app.unittests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/ZinoAgent.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ZinoAgent"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+    dependencies:
+      - target: ZinoAgent
+
+  ZinoAgentIntegrationTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: ZinoAgent/Tests/IntegrationTests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zinoagent.app.integrationtests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/ZinoAgent.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ZinoAgent"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+    dependencies:
+      - target: ZinoAgent
+
+  ZinoAgentUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: ZinoAgent/Tests/UITests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zinoagent.app.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: ZinoAgent
+    dependencies:
+      - target: ZinoAgent
+
+schemes:
+  ZinoAgent:
+    build:
+      targets:
+        ZinoAgent: all
+        ZinoAgentUnitTests: [test]
+        ZinoAgentIntegrationTests: [test]
+        ZinoAgentUITests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - name: ZinoAgentUnitTests
+        - name: ZinoAgentIntegrationTests
+    archive:
+      config: Release

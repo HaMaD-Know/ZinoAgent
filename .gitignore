@@ -1,23 +1,32 @@
-node_modules/
-dist/
+# Xcode
+*.xcuserdata
+*.xcscmblueprint
+DerivedData/
 .build/
-coverage/
+*.ipa
+*.xcarchive
+*.dSYM.zip
+*.dSYM
+*.xcresult
 *.log
-.DS_Store
-# Generated native artifacts
-native/zino-native/ios/Frameworks/llama.xcframework/
-ios/App/App/public/
-ios/App/App/capacitor.config.json
-ios/App/App/config.xml
-ios/App/CapApp-SPM/.build/
-ios/DerivedData/
-ios/build/
-*.xcuserstate
-xcuserdata/
-# Never commit signing material or secrets
+
+# Compiled native frameworks (built by scripts/build-llama-xcframework.sh)
+Packages/ZinoLlama/Frameworks/llama.xcframework/
+
+# Signing & Secrets — NEVER commit credentials, certs, or profiles
 *.p12
-*.mobileprovision
 *.cer
+*.mobileprovision
+*.pem
 *.key
 .env
 .env.*
+
+# macOS & Windows OS metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# SwiftPM / IDE
+.swiftpm/
+.vscode/

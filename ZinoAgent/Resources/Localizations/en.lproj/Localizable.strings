@@ -1,0 +1,10 @@
+/* ZinoAgent 2.0 Localizations (English) */
+"app.name" = "ZinoAgent";
+"app.tagline" = "Offline-First AI File Manager & Workspace";
+"nav.home" = "Home";
+"nav.files" = "Files";
+"nav.chat" = "AI Chat";
+"nav.studio3d" = "3D Studio";
+"nav.imageStudio" = "Image Studio";
+"nav.models" = "Models";
+"nav.settings" = "Settings";
