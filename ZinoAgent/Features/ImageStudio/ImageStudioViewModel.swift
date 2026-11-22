@@ -97,7 +97,9 @@ public final class ImageStudioViewModel: ObservableObject {
                         throw ZinoError(.providerNotConfigured, "Configure an OpenAI, Gemini, or OpenAI-compatible provider in Settings to generate images online.")
                     }
                     let sizes = self.currentCapabilities.supportedSizes
-                    let chosen = sizes.indices.contains(self.selectedSizeIndex) ? sizes[self.selectedSizeIndex] : ("1024×1024", 1024, 1024)
+                    let chosen = sizes.indices.contains(self.selectedSizeIndex)
+                        ? sizes[self.selectedSizeIndex]
+                        : ImageSizeOption(label: "1024×1024", width: 1024, height: 1024)
                     let qual = self.currentCapabilities.supportsQualitySelector ? self.selectedQuality : nil
 
                     record = try await self.coordinator.imageGenerationService.generateOnline(

@@ -34,12 +34,24 @@ public enum ImageAspectRatio: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+public struct ImageSizeOption: Sendable, Equatable {
+    public let label: String
+    public let width: Int
+    public let height: Int
+
+    public init(label: String, width: Int, height: Int) {
+        self.label = label
+        self.width = width
+        self.height = height
+    }
+}
+
 public struct ImageProviderCapabilities: Sendable, Equatable {
     public let supportsNegativePrompt: Bool
     public let supportsQualitySelector: Bool
     public let supportsStepsAndGuidance: Bool
     public let supportsSeed: Bool
-    public let supportedSizes: [(label: String, width: Int, height: Int)]
+    public let supportedSizes: [ImageSizeOption]
     public let qualityOptions: [String]
 
     public static func forProvider(type: ProviderType, modelID: String) -> ImageProviderCapabilities {
@@ -52,7 +64,11 @@ public struct ImageProviderCapabilities: Sendable, Equatable {
                     supportsQualitySelector: true,
                     supportsStepsAndGuidance: false,
                     supportsSeed: false,
-                    supportedSizes: [("1024 × 1024", 1024, 1024), ("1792 × 1024", 1792, 1024), ("1024 × 1792", 1024, 1792)],
+                    supportedSizes: [
+                        ImageSizeOption(label: "1024 × 1024", width: 1024, height: 1024),
+                        ImageSizeOption(label: "1792 × 1024", width: 1792, height: 1024),
+                        ImageSizeOption(label: "1024 × 1792", width: 1024, height: 1792)
+                    ],
                     qualityOptions: ["standard", "hd"]
                 )
             }
@@ -61,7 +77,11 @@ public struct ImageProviderCapabilities: Sendable, Equatable {
                 supportsQualitySelector: true,
                 supportsStepsAndGuidance: false,
                 supportsSeed: false,
-                supportedSizes: [("1024 × 1024", 1024, 1024), ("1536 × 1024", 1536, 1024), ("1024 × 1536", 1024, 1536)],
+                supportedSizes: [
+                    ImageSizeOption(label: "1024 × 1024", width: 1024, height: 1024),
+                    ImageSizeOption(label: "1536 × 1024", width: 1536, height: 1024),
+                    ImageSizeOption(label: "1024 × 1536", width: 1024, height: 1536)
+                ],
                 qualityOptions: ["low", "medium", "high"]
             )
         case .gemini:
@@ -70,7 +90,12 @@ public struct ImageProviderCapabilities: Sendable, Equatable {
                 supportsQualitySelector: false,
                 supportsStepsAndGuidance: false,
                 supportsSeed: false,
-                supportedSizes: [("1024 × 1024 (1:1)", 1024, 1024), ("1408 × 768 (16:9)", 1408, 768), ("768 × 1408 (9:16)", 768, 1408), ("1152 × 896 (4:3)", 1152, 896)],
+                supportedSizes: [
+                    ImageSizeOption(label: "1024 × 1024 (1:1)", width: 1024, height: 1024),
+                    ImageSizeOption(label: "1408 × 768 (16:9)", width: 1408, height: 768),
+                    ImageSizeOption(label: "768 × 1408 (9:16)", width: 768, height: 1408),
+                    ImageSizeOption(label: "1152 × 896 (4:3)", width: 1152, height: 896)
+                ],
                 qualityOptions: []
             )
         case .anthropic:
@@ -91,18 +116,11 @@ public struct ImageProviderCapabilities: Sendable, Equatable {
             supportsQualitySelector: false,
             supportsStepsAndGuidance: true,
             supportsSeed: true,
-            supportedSizes: [("\(nativeSize) × \(nativeSize) (Model Native)", nativeSize, nativeSize)],
+            supportedSizes: [
+                ImageSizeOption(label: "\(nativeSize) × \(nativeSize) (Model Native)", width: nativeSize, height: nativeSize)
+            ],
             qualityOptions: []
         )
-    }
-
-    public static func == (lhs: ImageProviderCapabilities, rhs: ImageProviderCapabilities) -> Bool {
-        lhs.supportsNegativePrompt == rhs.supportsNegativePrompt &&
-        lhs.supportsQualitySelector == rhs.supportsQualitySelector &&
-        lhs.supportsStepsAndGuidance == rhs.supportsStepsAndGuidance &&
-        lhs.supportsSeed == rhs.supportsSeed &&
-        lhs.qualityOptions == rhs.qualityOptions &&
-        lhs.supportedSizes.count == rhs.supportedSizes.count
     }
 }
 

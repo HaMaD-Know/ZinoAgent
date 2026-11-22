@@ -67,9 +67,9 @@ jobs:
           brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
           brew list cmake >/dev/null 2>&1 || brew install cmake
 
-      - name: Cache llama.xcframework
+      - name: Restore cached llama.xcframework
         id: llama-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: Packages/ZinoLlama/Frameworks/llama.xcframework
           key: llama-xcframework-${{ env.LLAMA_CPP_TAG }}-${{ hashFiles('scripts/build-llama-xcframework.sh') }}
@@ -79,6 +79,13 @@ jobs:
         run: |
           chmod +x scripts/build-llama-xcframework.sh
           bash scripts/build-llama-xcframework.sh
+
+      - name: Save llama.xcframework to cache immediately
+        if: steps.llama-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: Packages/ZinoLlama/Frameworks/llama.xcframework
+          key: llama-xcframework-${{ env.LLAMA_CPP_TAG }}-${{ hashFiles('scripts/build-llama-xcframework.sh') }}
 
       - name: Generate ZinoAgent.xcodeproj via XcodeGen
         run: |
@@ -110,6 +117,8 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "${DERIVED_DATA}" \
             -clonedSourcePackagesDirPath "${DERIVED_DATA}/SourcePackages" \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=YES \
             CODE_SIGNING_ALLOWED=NO 2>&1 | tee simulator-build.log | tail -n 120
           grep -q "\*\* BUILD SUCCEEDED \*\*" simulator-build.log
           mkdir -p artifacts
