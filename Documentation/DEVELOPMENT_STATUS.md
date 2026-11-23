@@ -27,11 +27,21 @@
 
 ## Verification & Known Environment Limitations
 
-### Verified Locally (Windows Development Host)
-- Static structural verification across all Swift source files, `project.yml`, `Info.plist`, `ZinoAgent.entitlements`, `Assets.xcassets`, `Package.swift`, and `.github/workflows/ios-build.yml` (verified via `scripts/verify-project.py`).
+### Verified on GitHub Actions macOS Runner (`macos-15`, Xcode 26.3) — Run [`45050793175`](https://github.com/HaMaD-Know/ZinoAgent/actions/runs/45050793175)
+- **`llama.xcframework` (Metal, iOS Device + Simulator)**: Built from pinned `llama.cpp` tag `b12020` and cached.
+- **XcodeGen & SwiftPM Resolution**: Generated `ZinoAgent.xcodeproj` and resolved `ZinoLlama`, `ZIPFoundation`, and `apple/ml-stable-diffusion` (`1.1.1`).
+- **iOS Simulator Build (`Debug-iphonesimulator`)**: `** BUILD SUCCEEDED **` with zero warnings; uploaded `ZinoAgent-iOS-Simulator-App` (`11.3 MB`).
+- **iPad Simulator Automated Tests (`xcodebuild test`)**: `** TEST SUCCEEDED **` — **23/23 tests passed (0 failures)** across:
+  - `AppDatabaseTests` (4/4 passed)
+  - `FileToolSystemTests` (4/4 passed)
+  - `GGUFHeaderParserTests` (3/3 passed)
+  - `GLTF2ParserTests` (2/2 passed)
+  - `ProviderAdapterTests` (4/4 passed)
+  - `SmartContextEngineTests` (4/4 passed)
+  - `WorkspaceIntegrationTests` (2/2 passed)
+- **Release `iphoneos` Archive & Device IPA**: `** ARCHIVE SUCCEEDED **`; uploaded `ZinoAgent-2.0-Unsigned-IPA-Requires-Resigning` (`5.3 MB`).
+- **Static Verification**: Verified locally via `scripts/verify-project.py` (79 Swift files, 157 public types, 0 errors, 0 warnings).
 
-### Pending macOS Runner / Physical Hardware Execution (NOT Claimed Passed Yet)
-Because the development workstation runs Windows without Xcode, macOS, or a physical iPad Pro M2 attached:
-1. **`xcodebuild` compilation & `ZinoAgentUnitTests` / `ZinoAgentIntegrationTests` execution**: Must be executed by pushing to GitHub and running `.github/workflows/ios-build.yml` on the `macos-15` runner.
-2. **Physical iPad Pro M2 verification**: Loading multi-GB GGUF models with Metal GPU offload, verifying real `os_proc_available_memory()` behavior under iPadOS memory warnings, testing Apple Files picker security-scoped bookmark persistence across cold launches, testing Core ML Stable Diffusion on Neural Engine, and inspecting large 3D models.
-3. **Live Cloud Provider API Tests**: Testing live completions/streaming/image generation against OpenAI, Anthropic, and Google Gemini requires user-supplied API keys in Settings.
+### Pending Physical Hardware & Live API Key Verification
+1. **Physical iPad Pro M2 verification**: Installing the signed/re-signed `.ipa` on a physical iPad Pro M2 (8 GB RAM) to test multi-GB GGUF Metal inference speed, iPadOS memory warnings, Apple Files security-scoped bookmark persistence across cold launches, and Core ML Stable Diffusion on Neural Engine.
+2. **Live Cloud Provider API Tests**: Testing live completions, streaming, and image generation against OpenAI, Anthropic, and Google Gemini requires user-configured API keys in Settings.
