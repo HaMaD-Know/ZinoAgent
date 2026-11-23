@@ -1,6 +1,7 @@
 import Foundation
 
 public enum ProviderType: String, CaseIterable, Identifiable, Codable, Sendable {
+    case openRouter = "openrouter"
     case openAI = "openai"
     case anthropic = "anthropic"
     case gemini = "gemini"
@@ -10,6 +11,7 @@ public enum ProviderType: String, CaseIterable, Identifiable, Codable, Sendable 
 
     public var displayName: String {
         switch self {
+        case .openRouter: return "OpenRouter (Free & Paid Models)"
         case .openAI: return "OpenAI"
         case .anthropic: return "Anthropic (Claude)"
         case .gemini: return "Google Gemini"
@@ -19,6 +21,7 @@ public enum ProviderType: String, CaseIterable, Identifiable, Codable, Sendable 
 
     public var defaultBaseURL: String {
         switch self {
+        case .openRouter: return "https://openrouter.ai/api/v1"
         case .openAI: return "https://api.openai.com/v1"
         case .anthropic: return "https://api.anthropic.com/v1"
         case .gemini: return "https://generativelanguage.googleapis.com/v1beta"

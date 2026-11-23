@@ -17,15 +17,16 @@ public struct ProviderEditorSheet: View {
     @State private var isTesting = false
     @State private var testStatusMessage: String?
     @State private var errorMessage: String?
+    @State private var showModelPicker = false
 
     public init(existing: ProviderConfiguration?, registry: ProviderRegistry, onSaved: @escaping () -> Void) {
         self.existing = existing
         self.registry = registry
         self.onSaved = onSaved
 
-        _name = State(initialValue: existing?.name ?? "OpenAI")
-        _providerType = State(initialValue: existing?.providerType ?? .openAI)
-        _baseURL = State(initialValue: existing?.baseURL ?? ProviderType.openAI.defaultBaseURL)
+        _name = State(initialValue: existing?.name ?? "OpenRouter")
+        _providerType = State(initialValue: existing?.providerType ?? .openRouter)
+        _baseURL = State(initialValue: existing?.baseURL ?? ProviderType.openRouter.defaultBaseURL)
         _defaultModelID = State(initialValue: existing?.defaultModelID ?? "")
         _isDefault = State(initialValue: existing?.isDefault ?? registry.providers.isEmpty)
         _discoveredModels = State(initialValue: existing?.cachedModels ?? [])
@@ -44,6 +45,7 @@ public struct ProviderEditorSheet: View {
                         if existing == nil {
                             baseURL = newType.defaultBaseURL
                             switch newType {
+                            case .openRouter: name = "OpenRouter"
                             case .openAI: name = "OpenAI"
                             case .anthropic: name = "Anthropic"
                             case .gemini: name = "Google Gemini"
@@ -101,16 +103,45 @@ public struct ProviderEditorSheet: View {
                     }
 
                     if !discoveredModels.isEmpty {
-                        Picker("Default Model", selection: $defaultModelID) {
-                            ForEach(discoveredModels) { model in
-                                Text(model.displayName).tag(model.id)
+                        Button {
+                            showModelPicker = true
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Default Model")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Text(defaultModelID.isEmpty ? "Tap to search Free & Paid models" : defaultModelID)
+                                        .font(.subheadline.weight(.medium))
+                                        .foregroundStyle(.primary)
+                                }
+                                Spacer()
+                                let freeCount = discoveredModels.filter { $0.pricingTier == .free }.count
+                                let paidCount = discoveredModels.filter { $0.pricingTier == .paid }.count
+                                Text("\(freeCount) Free • \(paidCount) Paid")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
                             }
                         }
                     } else {
-                        TextField("Default Model ID (e.g. gpt-4o, claude-sonnet-4-5, gemini-2.5-pro)", text: $defaultModelID)
+                        TextField("Default Model ID (e.g. meta-llama/llama-3.3-70b-instruct:free, gpt-4o)", text: $defaultModelID)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                     }
+                }
+            }
+            .sheet(isPresented: $showModelPicker) {
+                let draft = buildDraftConfig()
+                OnlineModelPickerSheet(
+                    providers: [draft],
+                    initialProviderID: draft.id,
+                    selectedModelID: defaultModelID,
+                    includeImageModels: false
+                ) { _, model in
+                    defaultModelID = model.id
                 }
             }
             .navigationTitle(existing == nil ? "Add AI Provider" : "Edit Provider")

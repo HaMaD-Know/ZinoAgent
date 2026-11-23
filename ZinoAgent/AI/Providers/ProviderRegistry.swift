@@ -24,6 +24,7 @@ public final class ProviderRegistry: ObservableObject {
 
     public func adapter(for type: ProviderType) -> OnlineAIProviderAdapter {
         switch type {
+        case .openRouter: return OpenAIProviderAdapter(providerType: .openRouter, http: http)
         case .openAI: return OpenAIProviderAdapter(providerType: .openAI, http: http)
         case .openAICompatible: return OpenAIProviderAdapter(providerType: .openAICompatible, http: http)
         case .anthropic: return AnthropicProviderAdapter(http: http)

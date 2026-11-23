@@ -50,6 +50,7 @@ public final class ImageStudioViewModel: ObservableObject {
         if !discovered.isEmpty { return discovered }
         switch provider.providerType {
         case .openAI: return ["gpt-image-1", "dall-e-3"]
+        case .openRouter: return ["black-forest-labs/flux.2-pro", "openai/gpt-image-1"]
         case .gemini: return ["imagen-3.0-generate-002", "gemini-2.0-flash-exp-image-generation"]
         case .openAICompatible: return [provider.defaultModelID ?? "flux"]
         case .anthropic: return []

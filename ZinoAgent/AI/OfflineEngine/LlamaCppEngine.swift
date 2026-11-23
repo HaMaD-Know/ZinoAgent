@@ -34,8 +34,9 @@ public enum LocalModelLoadState: Equatable, Sendable {
 }
 
 /// Offline GGUF inference engine powered by llama.cpp with Metal GPU acceleration.
-/// Uses a dedicated serial queue for thread-safe llama.cpp C API access, supports KV-cache prefix reuse,
-/// streaming token output, cancellation, model-native tokenization, and clean unloading under memory pressure.
+/// Uses per-generation cancellation IDs (eliminating cross-turn cancellation races),
+/// normalizes chat turns for all GGUF templates (Qwen, Llama, Gemma, Phi, Mistral),
+/// automatically recovers KV-cache mismatches, and safely handles context headroom.
 @MainActor
 public final class LlamaCppEngine: ObservableObject {
     @Published public private(set) var loadState: LocalModelLoadState = .unloaded
@@ -43,6 +44,7 @@ public final class LlamaCppEngine: ObservableObject {
     @Published public private(set) var isGenerating: Bool = false
 
     private let worker = LlamaWorker()
+    private var currentGenerationID: UUID?
 
     public init() {}
 
@@ -52,6 +54,55 @@ public final class LlamaCppEngine: ObservableObject {
         #else
         return false
         #endif
+    }
+
+    /// Normalizes chat messages so strict GGUF Jinja templates (Gemma, Mistral, Llama-3, Phi-3, Qwen)
+    /// never fail on multiple `system` messages, `tool` roles, or consecutive same-role turns.
+    public nonisolated static func normalizeMessagesForLocalTemplate(
+        _ messages: [ChatTemplateFormatter.PromptMessage]
+    ) -> [ChatTemplateFormatter.PromptMessage] {
+        var systemParts: [String] = []
+        var turns: [ChatTemplateFormatter.PromptMessage] = []
+
+        for msg in messages {
+            let trimmed = msg.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+
+            let roleLower = msg.role.lowercased()
+            if roleLower == "system" {
+                systemParts.append(trimmed)
+                continue
+            }
+
+            let normalizedRole: String
+            let normalizedContent: String
+            if roleLower == "tool" {
+                normalizedRole = "user"
+                normalizedContent = "[Tool Result]\n\(trimmed)"
+            } else if roleLower == "assistant" {
+                normalizedRole = "assistant"
+                normalizedContent = trimmed
+            } else {
+                normalizedRole = "user"
+                normalizedContent = trimmed
+            }
+
+            if let last = turns.last, last.role == normalizedRole {
+                turns[turns.count - 1] = ChatTemplateFormatter.PromptMessage(
+                    role: normalizedRole,
+                    content: last.content + "\n\n" + normalizedContent
+                )
+            } else {
+                turns.append(ChatTemplateFormatter.PromptMessage(role: normalizedRole, content: normalizedContent))
+            }
+        }
+
+        var result: [ChatTemplateFormatter.PromptMessage] = []
+        if !systemParts.isEmpty {
+            result.append(ChatTemplateFormatter.PromptMessage(role: "system", content: systemParts.joined(separator: "\n\n")))
+        }
+        result.append(contentsOf: turns)
+        return result
     }
 
     public func loadModel(
@@ -94,7 +145,7 @@ public final class LlamaCppEngine: ObservableObject {
     }
 
     public func unload() async {
-        worker.cancelActiveGeneration()
+        cancelGeneration()
         await worker.unload()
         loadedModel = nil
         isGenerating = false
@@ -103,7 +154,11 @@ public final class LlamaCppEngine: ObservableObject {
     }
 
     public func cancelGeneration() {
-        worker.cancelActiveGeneration()
+        if let id = currentGenerationID {
+            worker.cancel(generationID: id)
+            currentGenerationID = nil
+        }
+        isGenerating = false
     }
 
     /// Exact token count using the currently loaded GGUF model's tokenizer (nil if no model is loaded).
@@ -120,16 +175,30 @@ public final class LlamaCppEngine: ObservableObject {
         config: GenerationConfig
     ) -> AsyncThrowingStream<StreamChunk, Error> {
         let modelArch = loadedModel?.architecture ?? "chatml"
+        let normalized = Self.normalizeMessagesForLocalTemplate(messages)
+        let genID = UUID()
+
+        // Cancel any previous generation strictly by its own ID (never clobbering `genID`).
+        if let prevID = currentGenerationID {
+            worker.cancel(generationID: prevID)
+        }
+        currentGenerationID = genID
         isGenerating = true
 
         return AsyncThrowingStream { continuation in
             let task = Task {
                 defer {
-                    Task { @MainActor in self.isGenerating = false }
+                    Task { @MainActor in
+                        if self.currentGenerationID == genID {
+                            self.currentGenerationID = nil
+                            self.isGenerating = false
+                        }
+                    }
                 }
                 do {
                     let result = try await self.worker.generate(
-                        messages: messages,
+                        generationID: genID,
+                        messages: normalized,
                         architecture: modelArch,
                         config: config
                     ) { tokenPiece in
@@ -143,7 +212,7 @@ public final class LlamaCppEngine: ObservableObject {
                 }
             }
             continuation.onTermination = { _ in
-                self.worker.cancelActiveGeneration()
+                self.worker.cancel(generationID: genID)
                 task.cancel()
             }
         }
@@ -155,29 +224,29 @@ public final class LlamaCppEngine: ObservableObject {
 private final class LlamaWorker: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.zinoagent.llama.worker", qos: .userInitiated)
     private let cancelLock = NSLock()
-    private var cancelled = false
+    private var cancelledIDs: Set<UUID> = []
 
     #if canImport(llama)
     private static var backendInitialized = false
     private var runtime: LlamaNativeRuntime?
     #endif
 
-    func cancelActiveGeneration() {
+    func cancel(generationID: UUID) {
         cancelLock.lock()
-        cancelled = true
+        cancelledIDs.insert(generationID)
         cancelLock.unlock()
     }
 
-    private func resetCancel() {
+    private func cleanupCancel(generationID: UUID) {
         cancelLock.lock()
-        cancelled = false
+        cancelledIDs.remove(generationID)
         cancelLock.unlock()
     }
 
-    private func isCancelled() -> Bool {
+    private func isCancelled(_ generationID: UUID) -> Bool {
         cancelLock.lock()
         defer { cancelLock.unlock() }
-        return cancelled
+        return cancelledIDs.contains(generationID)
     }
 
     func load(
@@ -264,14 +333,15 @@ private final class LlamaWorker: @unchecked Sendable {
     }
 
     func generate(
+        generationID: UUID,
         messages: [ChatTemplateFormatter.PromptMessage],
         architecture: String,
         config: GenerationConfig,
         onText: @escaping @Sendable (String) -> Void
     ) async throws -> (usage: TokenUsage, stopReason: String) {
-        resetCancel()
         return try await withCheckedThrowingContinuation { cont in
             queue.async {
+                defer { self.cleanupCancel(generationID: generationID) }
                 #if canImport(llama)
                 guard let rt = self.runtime else {
                     cont.resume(throwing: ZinoError(.modelNotLoaded, "No local model is loaded. Open Models to load a GGUF model."))
@@ -280,7 +350,8 @@ private final class LlamaWorker: @unchecked Sendable {
                 let prompt: String
                 let stops: [String]
                 let pairs = messages.map { ($0.role, $0.content) }
-                if let templated = rt.applyTemplate(pairs, addAssistant: true) {
+                if let templated = rt.applyTemplate(pairs, addAssistant: true),
+                   !templated.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     prompt = templated
                     stops = ["<|im_end|>", "<|eot_id|>", "<end_of_turn>", "<|end|>", "<|endoftext|>"]
                 } else {
@@ -294,7 +365,7 @@ private final class LlamaWorker: @unchecked Sendable {
                         prompt: prompt,
                         config: config,
                         stopSequences: stops,
-                        isCancelled: { self.isCancelled() },
+                        isCancelled: { self.isCancelled(generationID) },
                         onText: onText
                     )
                     cont.resume(returning: result)
@@ -388,7 +459,13 @@ private final class LlamaNativeRuntime {
         cparams.n_threads_batch = Int32(nThreads)
         cparams.flash_attn_type = flashAttention ? LLAMA_FLASH_ATTN_TYPE_AUTO : LLAMA_FLASH_ATTN_TYPE_DISABLED
 
-        guard let c = llama_init_from_model(m, cparams) else {
+        var c = llama_init_from_model(m, cparams)
+        if c == nil && flashAttention {
+            // Retry cleanly without flash attention for architectures that disallow it on Metal.
+            cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED
+            c = llama_init_from_model(m, cparams)
+        }
+        guard let validCtx = c else {
             llama_model_free(m)
             throw ZinoError(
                 .insufficientMemory,
@@ -397,9 +474,9 @@ private final class LlamaNativeRuntime {
         }
 
         self.model = m
-        self.ctx = c
+        self.ctx = validCtx
         self.vocab = llama_model_get_vocab(m)!
-        self.nCtx = Int(llama_n_ctx(c))
+        self.nCtx = Int(llama_n_ctx(validCtx))
         self.nBatch = nBatch
     }
 
@@ -488,7 +565,19 @@ private final class LlamaNativeRuntime {
             llama_memory_clear(mem, true)
             common = 0
         }
-        try decode(&tokens, from: common)
+        do {
+            try decode(&tokens, from: common)
+        } catch {
+            // If prefix-reused KV cache became inconsistent (e.g. after cancellation or sliding window),
+            // clear memory and perform a clean full-prompt decode once before surfacing an error.
+            if common > 0 {
+                llama_memory_clear(mem, true)
+                cachedTokens = []
+                try decode(&tokens, from: 0)
+            } else {
+                throw error
+            }
+        }
         cachedTokens = tokens
     }
 
@@ -521,8 +610,15 @@ private final class LlamaNativeRuntime {
         guard !tokens.isEmpty else {
             throw ZinoError(.invalidArgument, "Prompt tokenized to zero tokens.")
         }
-        if tokens.count >= nCtx {
-            throw ZinoError(.contextFull, "Prompt (\(tokens.count) tokens) exceeds loaded context window (\(nCtx)). Compact context via SmartContextEngine or increase context size.")
+
+        // Safely guarantee completion headroom inside nCtx so slight estimation drift never crashes generation.
+        let maxPromptTokens = max(256, nCtx - 128)
+        if tokens.count > maxPromptTokens {
+            let keepHead = min(220, maxPromptTokens / 4)
+            let keepTail = maxPromptTokens - keepHead
+            tokens = Array(tokens.prefix(keepHead)) + Array(tokens.suffix(keepTail))
+            cachedTokens = []
+            llama_memory_clear(llama_get_memory(ctx), true)
         }
 
         try preparePrompt(&tokens)
@@ -581,7 +677,7 @@ private final class LlamaNativeRuntime {
             held += utf8.flush()
             flushHeld(keep: 0)
         }
-        if stopReason == "error" || stopReason == "context_full" {
+        if stopReason == "error" || stopReason == "context_full" || stopReason == "cancelled" {
             cachedTokens = []
             llama_memory_clear(llama_get_memory(ctx), true)
         }

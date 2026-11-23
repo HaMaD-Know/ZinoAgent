@@ -1,13 +1,11 @@
 import SwiftUI
 
-/// Primary application sections for iPad sidebar and iPhone compact navigation.
+/// Primary 7 application sections for iPad sidebar and iPhone compact navigation.
+/// Browser, Terminal, Skills, and Plugins live exclusively in the right-side workspace dock inside AI Chat.
 public enum NavigationSection: String, CaseIterable, Identifiable, Codable, Sendable {
     case home
     case files
     case aiChat
-    case browser
-    case terminal
-    case skillsAndPlugins
     case threeDStudio
     case imageStudio
     case models
@@ -20,9 +18,6 @@ public enum NavigationSection: String, CaseIterable, Identifiable, Codable, Send
         case .home: return "Home"
         case .files: return "Files"
         case .aiChat: return "AI Chat"
-        case .browser: return "Browser"
-        case .terminal: return "Terminal"
-        case .skillsAndPlugins: return "Skills & Plugins"
         case .threeDStudio: return "3D Studio"
         case .imageStudio: return "Image Studio"
         case .models: return "Models"
@@ -35,9 +30,6 @@ public enum NavigationSection: String, CaseIterable, Identifiable, Codable, Send
         case .home: return "square.grid.2x2"
         case .files: return "folder"
         case .aiChat: return "bubble.left.and.text.bubble.right"
-        case .browser: return "globe"
-        case .terminal: return "terminal"
-        case .skillsAndPlugins: return "puzzlepiece.extension"
         case .threeDStudio: return "cube"
         case .imageStudio: return "photo.on.rectangle.angled"
         case .models: return "cpu"
@@ -49,14 +41,30 @@ public enum NavigationSection: String, CaseIterable, Identifiable, Codable, Send
         switch self {
         case .home: return "Workspace overview"
         case .files: return "Selected folders & operations"
-        case .aiChat: return "Offline & online assistant"
-        case .browser: return "Live server & ephemeral AI vision"
-        case .terminal: return "Workspace shell, JS runtime & CLI"
-        case .skillsAndPlugins: return "AI skills, GitHub & Cloudflare"
+        case .aiChat: return "Assistant, Browser, Terminal, Skills & Plugins"
         case .threeDStudio: return "Interactive 3D inspection"
         case .imageStudio: return "Image generation studio"
         case .models: return "Local GGUF & Core ML models"
         case .settings: return "Preferences, providers & privacy"
+        }
+    }
+}
+
+/// Tabs hosted exclusively inside the right-side Workspace Dock of AI Chat.
+public enum AIChatRightDockTab: String, CaseIterable, Identifiable, Sendable {
+    case browser = "Browser"
+    case terminal = "Terminal"
+    case skills = "Skills"
+    case plugins = "Plugins"
+
+    public var id: String { rawValue }
+
+    public var iconName: String {
+        switch self {
+        case .browser: return "globe"
+        case .terminal: return "terminal"
+        case .skills: return "sparkles"
+        case .plugins: return "puzzlepiece.extension"
         }
     }
 }

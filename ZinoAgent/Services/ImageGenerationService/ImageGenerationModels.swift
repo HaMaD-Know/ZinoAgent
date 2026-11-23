@@ -57,7 +57,7 @@ public struct ImageProviderCapabilities: Sendable, Equatable {
     public static func forProvider(type: ProviderType, modelID: String) -> ImageProviderCapabilities {
         let lower = modelID.lowercased()
         switch type {
-        case .openAI, .openAICompatible:
+        case .openAI, .openAICompatible, .openRouter:
             if lower.contains("dall-e-3") {
                 return ImageProviderCapabilities(
                     supportsNegativePrompt: false,

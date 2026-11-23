@@ -132,12 +132,6 @@ public struct RootNavigationView: View {
             FileManagerView(coordinator: coordinator)
         case .aiChat:
             AIChatView(coordinator: coordinator)
-        case .browser:
-            BrowserStudioView(coordinator: coordinator)
-        case .terminal:
-            TerminalView(coordinator: coordinator)
-        case .skillsAndPlugins:
-            SkillsPluginsView(coordinator: coordinator)
         case .threeDStudio:
             ThreeDStudioView(coordinator: coordinator)
         case .imageStudio:

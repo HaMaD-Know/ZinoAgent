@@ -9,6 +9,8 @@ public struct AIChatView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     @State private var showConversationDrawer = false
+    @State private var showCompactRightDockSheet = false
+    @State private var showOnlineModelPicker = false
     @State private var showContextDashboard = false
     @State private var showFileAttachPicker = false
     @State private var selectedPhotoItem: PhotosPickerItem?
@@ -25,12 +27,19 @@ public struct AIChatView: View {
     public var body: some View {
         NavigationStack {
             HStack(spacing: 0) {
-                if horizontalSizeClass == .regular {
+                if horizontalSizeClass == .regular && !coordinator.isChatRightDockVisible {
                     conversationSidebar
-                        .frame(width: 240)
+                        .frame(width: 225)
                     Divider()
                 }
                 chatMainColumn
+                    .frame(minWidth: 320, maxWidth: .infinity)
+
+                if horizontalSizeClass == .regular && coordinator.isChatRightDockVisible {
+                    Divider()
+                    AIChatWorkspaceDock(coordinator: coordinator)
+                        .frame(minWidth: 360, idealWidth: 420, maxWidth: 480)
+                }
             }
             .background(ZinoTheme.surfacePrimary)
             .navigationTitle(viewModel.activeConversation?.title ?? "AI Chat")
@@ -45,6 +54,28 @@ public struct AIChatView: View {
                                 Button("Done") { showConversationDrawer = false }
                             }
                         }
+                }
+            }
+            .sheet(isPresented: $showCompactRightDockSheet) {
+                NavigationStack {
+                    AIChatWorkspaceDock(coordinator: coordinator)
+                        .navigationTitle("Workspace Tools")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .topBarTrailing) {
+                                Button("Done") { showCompactRightDockSheet = false }
+                            }
+                        }
+                }
+            }
+            .sheet(isPresented: $showOnlineModelPicker) {
+                OnlineModelPickerSheet(
+                    providers: coordinator.providerRegistry.providers,
+                    initialProviderID: viewModel.activeConversation?.providerID ?? coordinator.providerRegistry.defaultProvider?.id,
+                    selectedModelID: viewModel.activeConversation?.modelID ?? coordinator.providerRegistry.defaultProvider?.defaultModelID,
+                    includeImageModels: false
+                ) { provider, model in
+                    viewModel.selectOnlineProvider(provider, modelID: model.id)
                 }
             }
             .sheet(isPresented: $showContextDashboard) {
@@ -219,6 +250,19 @@ public struct AIChatView: View {
             modeAndModelControlBar
             Divider()
 
+            if case let .loading(modelName, progress) = coordinator.offlineEngine.loadState {
+                HStack(spacing: 10) {
+                    ProgressView(value: progress).frame(width: 110)
+                    Text("Loading local model '\(modelName)' (\(Int(progress * 100))%)...")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+                .background(ZinoTheme.surfaceSecondary)
+            }
+
             if let error = viewModel.errorMessage {
                 HStack {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -310,7 +354,7 @@ public struct AIChatView: View {
 
                 if coordinator.localHTTPServer.isRunning {
                     Button {
-                        coordinator.selectedSection = .browser
+                        coordinator.openChatRightDock(tab: .browser)
                     } label: {
                         StatusBadge(
                             "Live Browser (\(coordinator.localHTTPServer.baseURLString))",
@@ -342,17 +386,6 @@ public struct AIChatView: View {
                     ForEach(coordinator.modelRegistry.models) { model in
                         Button {
                             viewModel.selectLocalModel(model)
-                            if coordinator.offlineEngine.loadedModel?.id != model.id {
-                                Task {
-                                    let url = coordinator.modelRegistry.resolveFileURL(for: model)
-                                    try? await coordinator.offlineEngine.loadModel(
-                                        model,
-                                        fileURL: url,
-                                        contextLength: coordinator.settings.localContextLength,
-                                        useMetalGPU: coordinator.settings.useMetalGPUOffload
-                                    )
-                                }
-                            }
                         } label: {
                             let isLoaded = coordinator.offlineEngine.loadedModel?.id == model.id
                             Label("\(model.name) (\(model.quantization))\(isLoaded ? " • Loaded" : "")", systemImage: isLoaded ? "checkmark.circle.fill" : "cpu")
@@ -373,35 +406,30 @@ public struct AIChatView: View {
                 .clipShape(Capsule())
             }
         } else {
-            Menu {
+            Button {
                 if coordinator.providerRegistry.providers.isEmpty {
-                    Button("Configure Provider in Settings") {
-                        coordinator.openProviderSetup()
-                    }
+                    coordinator.openProviderSetup()
                 } else {
-                    ForEach(coordinator.providerRegistry.providers) { provider in
-                        Menu(provider.name) {
-                            let models = provider.cachedModels.filter { !$0.supportsImageGeneration }
-                            if models.isEmpty {
-                                Button(provider.defaultModelID ?? "Use Default") {
-                                    viewModel.selectOnlineProvider(provider, modelID: provider.defaultModelID)
-                                }
-                            } else {
-                                ForEach(models.prefix(30)) { m in
-                                    Button(m.displayName) {
-                                        viewModel.selectOnlineProvider(provider, modelID: m.id)
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    showOnlineModelPicker = true
                 }
             } label: {
+                let activeProvider = coordinator.providerRegistry.providers.first(where: { $0.id == viewModel.activeConversation?.providerID }) ?? coordinator.providerRegistry.defaultProvider
+                let activeModelID = viewModel.activeConversation?.modelID ?? activeProvider?.defaultModelID
+                let activeDescriptor = activeProvider?.cachedModels.first(where: { $0.id == activeModelID })
                 HStack(spacing: 5) {
                     Image(systemName: "cloud")
-                    Text(viewModel.activeConversation?.modelID ?? coordinator.providerRegistry.defaultProvider?.defaultModelID ?? "Select Online Model")
+                    Text(activeDescriptor?.displayName ?? activeModelID ?? "Select Online Model")
                         .lineLimit(1)
-                    Image(systemName: "chevron.down").font(.caption2)
+                    if let tier = activeDescriptor?.pricingTier {
+                        Text(tier == .free ? "FREE" : "PAID")
+                            .font(.system(size: 9, weight: .bold))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background((tier == .free ? ZinoTheme.statusPositive : ZinoTheme.statusWarning).opacity(0.2))
+                            .foregroundStyle(tier == .free ? ZinoTheme.statusPositive : ZinoTheme.statusWarning)
+                            .clipShape(Capsule())
+                    }
+                    Image(systemName: "magnifyingglass").font(.caption2)
                 }
                 .font(.caption.weight(.medium))
                 .padding(.horizontal, 10)
@@ -409,6 +437,7 @@ public struct AIChatView: View {
                 .background(ZinoTheme.surfaceSecondary)
                 .clipShape(Capsule())
             }
+            .buttonStyle(.plain)
         }
     }
 
@@ -659,13 +688,11 @@ public struct AIChatView: View {
 
     @ToolbarContentBuilder
     private var toolbarItems: some ToolbarContent {
-        if horizontalSizeClass != .regular {
-            ToolbarItem(placement: .topBarLeading) {
-                Button {
-                    showConversationDrawer = true
-                } label: {
-                    Label("Chats", systemImage: "sidebar.left")
-                }
+        ToolbarItem(placement: .topBarLeading) {
+            Button {
+                showConversationDrawer = true
+            } label: {
+                Label("Chats", systemImage: "list.bullet.indent")
             }
         }
         ToolbarItemGroup(placement: .topBarTrailing) {
@@ -673,6 +700,18 @@ public struct AIChatView: View {
                 viewModel.createNewConversation()
             } label: {
                 Label("New Chat", systemImage: "square.and.pencil")
+            }
+
+            Button {
+                if horizontalSizeClass == .regular {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        coordinator.isChatRightDockVisible.toggle()
+                    }
+                } else {
+                    showCompactRightDockSheet = true
+                }
+            } label: {
+                Label("Browser, Terminal, Skills & Plugins", systemImage: "sidebar.right")
             }
 
             Menu {

@@ -176,6 +176,27 @@ public final class AIChatViewModel: ObservableObject {
         activeConversation = conv
         try? coordinator.conversationRepository.updateConversation(conv)
         refreshContextSnapshot()
+        if coordinator.offlineEngine.loadedModel?.id != model.id {
+            loadLocalModel(model)
+        }
+    }
+
+    public func loadLocalModel(_ model: LocalModelRecord) {
+        errorMessage = nil
+        Task {
+            do {
+                let url = coordinator.modelRegistry.resolveFileURL(for: model)
+                try await coordinator.offlineEngine.loadModel(
+                    model,
+                    fileURL: url,
+                    contextLength: coordinator.settings.localContextLength,
+                    useMetalGPU: coordinator.settings.useMetalGPUOffload
+                )
+                refreshContextSnapshot()
+            } catch {
+                errorMessage = "Could not load local model '\(model.name)': \(error.localizedDescription)"
+            }
+        }
     }
 
     // MARK: - Attachments
@@ -417,6 +438,15 @@ public final class AIChatViewModel: ObservableObject {
         let skillsBlock = coordinator.skillRegistry.activeSkillsPromptBlock(for: userQuery)
         let toolBlock = FileToolDefinitions.offlineToolPromptBlock(for: coordinator.settings.aiFilePermissionLevel)
 
+        if conversation.mode == .offline {
+            // Keep offline prompt concise so 2B/3B/7B models on 4K context stay fast and accurate.
+            let compactSkills = String(skillsBlock.prefix(900))
+            let compactWorkspace = String(workspaceSummary.prefix(700))
+            return [base, compactWorkspace, compactSkills, toolBlock]
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n\n")
+        }
+
         return [base, workspaceSummary, skillsBlock, toolBlock]
             .filter { !$0.isEmpty }
             .joined(separator: "\n\n")
@@ -460,10 +490,34 @@ public final class AIChatViewModel: ObservableObject {
                 let modelLabel: String
 
                 if conversation.mode == .offline {
+                    // Auto-load the selected (or first compatible) local GGUF model if it was unloaded.
+                    if self.coordinator.offlineEngine.loadedModel == nil {
+                        let targetModel: LocalModelRecord? = {
+                            if let mid = conversation.modelID,
+                               let m = self.coordinator.modelRegistry.models.first(where: { $0.id == mid && $0.compatibilityStatus.canAttemptLoad }) {
+                                return m
+                            }
+                            return self.coordinator.modelRegistry.models.first(where: { $0.compatibilityStatus.canAttemptLoad })
+                        }()
+                        guard let modelToLoad = targetModel else {
+                            throw ZinoError(
+                                .modelNotLoaded,
+                                "No local GGUF model is installed. Open the Models tab to download or import a GGUF model, or switch to Online mode."
+                            )
+                        }
+                        let fileURL = self.coordinator.modelRegistry.resolveFileURL(for: modelToLoad)
+                        try await self.coordinator.offlineEngine.loadModel(
+                            modelToLoad,
+                            fileURL: fileURL,
+                            contextLength: self.coordinator.settings.localContextLength,
+                            useMetalGPU: self.coordinator.settings.useMetalGPUOffload
+                        )
+                    }
+
                     guard let loaded = self.coordinator.offlineEngine.loadedModel else {
                         throw ZinoError(
                             .modelNotLoaded,
-                            "No local GGUF model is loaded. Open the Models tab to load a downloaded/imported model, or switch to Online mode."
+                            "Local GGUF model could not be loaded. Check Models tab for memory headroom or switch to Online mode."
                         )
                     }
                     providerLabel = "Offline (llama.cpp Metal)"
@@ -569,6 +623,13 @@ public final class AIChatViewModel: ObservableObject {
                     switch outcome {
                     case let .executed(output, ephemeralImage):
                         self.appendToolMessage(toolCallID: tc.id, toolName: tc.name, content: output, ephemeralImage: ephemeralImage)
+                        if tc.name == FileToolName.openInBrowser.rawValue || tc.name == FileToolName.startLocalServer.rawValue {
+                            self.coordinator.activeChatRightDockTab = .browser
+                            self.coordinator.isChatRightDockVisible = true
+                        } else if tc.name == FileToolName.runTerminalCommand.rawValue {
+                            self.coordinator.activeChatRightDockTab = .terminal
+                            self.coordinator.isChatRightDockVisible = true
+                        }
                         autoExecutedAny = true
                     case let .requiresConfirmation(proposal):
                         self.pendingToolProposals.append(proposal)

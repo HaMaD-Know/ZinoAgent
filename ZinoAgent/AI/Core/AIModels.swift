@@ -208,6 +208,20 @@ public struct GenerationConfig: Codable, Sendable, Equatable {
     }
 }
 
+public enum ModelPricingTier: String, CaseIterable, Identifiable, Codable, Sendable {
+    case free
+    case paid
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .free: return "Free"
+        case .paid: return "Paid"
+        }
+    }
+}
+
 public struct AIModelDescriptor: Identifiable, Codable, Sendable, Equatable, Hashable {
     public let id: String
     public let displayName: String
@@ -215,6 +229,8 @@ public struct AIModelDescriptor: Identifiable, Codable, Sendable, Equatable, Has
     public let supportsVision: Bool
     public let supportsTools: Bool
     public let supportsImageGeneration: Bool
+    public let pricingTier: ModelPricingTier
+    public let pricingLabel: String?
 
     public init(
         id: String,
@@ -222,7 +238,9 @@ public struct AIModelDescriptor: Identifiable, Codable, Sendable, Equatable, Has
         contextWindow: Int = 128_000,
         supportsVision: Bool = false,
         supportsTools: Bool = true,
-        supportsImageGeneration: Bool = false
+        supportsImageGeneration: Bool = false,
+        pricingTier: ModelPricingTier = .paid,
+        pricingLabel: String? = nil
     ) {
         self.id = id
         self.displayName = displayName ?? id
@@ -230,6 +248,24 @@ public struct AIModelDescriptor: Identifiable, Codable, Sendable, Equatable, Has
         self.supportsVision = supportsVision
         self.supportsTools = supportsTools
         self.supportsImageGeneration = supportsImageGeneration
+        self.pricingTier = pricingTier
+        self.pricingLabel = pricingLabel
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, displayName, contextWindow, supportsVision, supportsTools, supportsImageGeneration, pricingTier, pricingLabel
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        displayName = try c.decodeIfPresent(String.self, forKey: .displayName) ?? id
+        contextWindow = try c.decodeIfPresent(Int.self, forKey: .contextWindow) ?? 128_000
+        supportsVision = try c.decodeIfPresent(Bool.self, forKey: .supportsVision) ?? false
+        supportsTools = try c.decodeIfPresent(Bool.self, forKey: .supportsTools) ?? true
+        supportsImageGeneration = try c.decodeIfPresent(Bool.self, forKey: .supportsImageGeneration) ?? false
+        pricingTier = try c.decodeIfPresent(ModelPricingTier.self, forKey: .pricingTier) ?? (id.lowercased().hasSuffix(":free") ? .free : .paid)
+        pricingLabel = try c.decodeIfPresent(String.self, forKey: .pricingLabel)
     }
 }
 

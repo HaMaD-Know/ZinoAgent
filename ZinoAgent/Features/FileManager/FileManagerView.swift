@@ -421,9 +421,9 @@ public struct FileManagerView: View {
         if ["html", "htm"].contains(item.fileExtension.lowercased()), let folder = viewModel.selectedFolder {
             Button {
                 _ = try? coordinator.browserService.serveAndOpenFile(relativePath: item.name, in: folder)
-                coordinator.selectedSection = .browser
+                coordinator.openChatRightDock(tab: .browser)
             } label: {
-                Label("Serve & Open in Custom Browser", systemImage: "globe")
+                Label("Serve & Open in AI Browser", systemImage: "globe")
             }
         }
         if item.isThreeDModel {

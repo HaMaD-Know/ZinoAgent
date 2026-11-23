@@ -39,78 +39,97 @@ public struct SkillsPluginsView: View {
     @State private var statusMessage: String?
     @State private var errorMessage: String?
 
-    public init(coordinator: AppCoordinator) {
+    public enum Mode {
+        case skillsOnly
+        case pluginsOnly
+    }
+
+    public let displayMode: Mode
+
+    public init(coordinator: AppCoordinator, displayMode: Mode = .skillsOnly) {
         self.coordinator = coordinator
+        self.displayMode = displayMode
         self.skillRegistry = coordinator.skillRegistry
         self.githubPlugin = coordinator.githubPlugin
         self.cloudflarePlugin = coordinator.cloudflarePlugin
+        _selectedTab = State(initialValue: displayMode == .skillsOnly ? .skills : .github)
     }
 
     public var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                Picker("Tab", selection: $selectedTab) {
-                    ForEach(SectionTab.allCases) { tab in
-                        Text(tab.rawValue).tag(tab)
+        VStack(spacing: 0) {
+            if displayMode == .skillsOnly {
+                HStack {
+                    Text("AI Skills (\(skillRegistry.skills.filter(\.isEnabled).count) active)")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button {
+                        showImportSkillPicker = true
+                    } label: {
+                        Label("Import", systemImage: "square.and.arrow.down")
+                            .font(.caption.weight(.medium))
                     }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+
+                    Button {
+                        showCreateSkillSheet = true
+                    } label: {
+                        Label("New Skill", systemImage: "plus")
+                            .font(.caption.weight(.medium))
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.mini)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(ZinoTheme.surfaceSecondary.opacity(0.6))
+                Divider()
+            } else {
+                Picker("Plugin", selection: $selectedTab) {
+                    Text("GitHub").tag(SectionTab.github)
+                    Text("Cloudflare").tag(SectionTab.cloudflare)
                 }
                 .pickerStyle(.segmented)
-                .padding(.horizontal, ZinoTheme.Spacing.md)
-                .padding(.vertical, 10)
-
-                if let status = statusMessage {
-                    bannerBar(status, isError: false) { statusMessage = nil }
-                }
-                if let err = errorMessage {
-                    bannerBar(err, isError: true) { errorMessage = nil }
-                }
-
-                switch selectedTab {
-                case .skills:
-                    skillsTabContent
-                case .github:
-                    githubTabContent
-                case .cloudflare:
-                    cloudflareTabContent
-                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                Divider()
             }
-            .background(ZinoTheme.surfacePrimary)
-            .navigationTitle("Skills & Plugins")
-            .toolbar {
-                if selectedTab == .skills {
-                    ToolbarItemGroup(placement: .topBarTrailing) {
-                        Button {
-                            showImportSkillPicker = true
-                        } label: {
-                            Label("Import SKILL.md", systemImage: "square.and.arrow.down")
-                        }
-                        Button {
-                            showCreateSkillSheet = true
-                        } label: {
-                            Label("New Skill", systemImage: "plus")
-                        }
+
+            if let status = statusMessage {
+                bannerBar(status, isError: false) { statusMessage = nil }
+            }
+            if let err = errorMessage {
+                bannerBar(err, isError: true) { errorMessage = nil }
+            }
+
+            if displayMode == .skillsOnly {
+                skillsTabContent
+            } else if selectedTab == .cloudflare {
+                cloudflareTabContent
+            } else {
+                githubTabContent
+            }
+        }
+        .background(ZinoTheme.surfacePrimary)
+        .sheet(isPresented: $showImportSkillPicker) {
+            DocumentPickerView(contentTypes: [.item], allowsMultipleSelection: false) { urls in
+                if let first = urls.first {
+                    do {
+                        let s = try skillRegistry.importSkillMarkdown(from: first)
+                        statusMessage = "Imported skill '\(s.name)'."
+                    } catch {
+                        errorMessage = error.localizedDescription
                     }
                 }
             }
-            .sheet(isPresented: $showImportSkillPicker) {
-                DocumentPickerView(contentTypes: [.item], allowsMultipleSelection: false) { urls in
-                    if let first = urls.first {
-                        do {
-                            let s = try skillRegistry.importSkillMarkdown(from: first)
-                            statusMessage = "Imported skill '\(s.name)'."
-                        } catch {
-                            errorMessage = error.localizedDescription
-                        }
-                    }
-                }
-            }
-            .sheet(isPresented: $showCreateSkillSheet) {
-                createSkillSheet
-            }
-            .onAppear {
-                githubDefaultRepoInput = githubPlugin.defaultRepository
-                cloudflareAccountIDInput = cloudflarePlugin.accountID
-            }
+        }
+        .sheet(isPresented: $showCreateSkillSheet) {
+            createSkillSheet
+        }
+        .onAppear {
+            githubDefaultRepoInput = githubPlugin.defaultRepository
+            cloudflareAccountIDInput = cloudflarePlugin.accountID
         }
     }
 

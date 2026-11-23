@@ -7,6 +7,8 @@ import Combine
 public final class AppCoordinator: ObservableObject {
     // Navigation state
     @Published public var selectedSection: NavigationSection = .home
+    @Published public var isChatRightDockVisible: Bool = true
+    @Published public var activeChatRightDockTab: AIChatRightDockTab = .browser
     @Published public var storageBreakdown: StorageBreakdown
     @Published public var systemBannerMessage: String?
 
@@ -249,6 +251,12 @@ public final class AppCoordinator: ObservableObject {
     public func openModelCatalog() {
         requestOpenModelCatalog = true
         selectedSection = .models
+    }
+
+    public func openChatRightDock(tab: AIChatRightDockTab) {
+        activeChatRightDockTab = tab
+        isChatRightDockVisible = true
+        selectedSection = .aiChat
     }
 
     public func openProviderSetup() {

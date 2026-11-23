@@ -19,68 +19,80 @@ public struct BrowserStudioView: View {
     }
 
     public var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                serverAndFolderBar
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Text(browser.pageTitle)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                Spacer()
+                Button {
+                    captureAndShowEphemeralVision()
+                } label: {
+                    Label("RAM Vision", systemImage: "eye.circle")
+                        .font(.caption.weight(.medium))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+
+                Button {
+                    askAIToInspectCurrentPage()
+                } label: {
+                    Label("Ask AI", systemImage: "sparkles")
+                        .font(.caption.weight(.medium))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+
+                Button {
+                    showConsoleDrawer.toggle()
+                } label: {
+                    Image(systemName: "terminal")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(ZinoTheme.surfaceSecondary.opacity(0.6))
+
+            Divider()
+            serverAndFolderBar
+            Divider()
+            addressBar
+            Divider()
+
+            if let banner = statusBanner {
+                HStack {
+                    Image(systemName: "info.circle.fill").foregroundStyle(ZinoTheme.statusInfo)
+                    Text(banner).font(.caption).lineLimit(2)
+                    Spacer()
+                    Button { statusBanner = nil } label: { Image(systemName: "xmark").font(.caption2) }.buttonStyle(.plain)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+                .background(ZinoTheme.statusInfo.opacity(0.10))
+            }
+
+            ZStack(alignment: .bottomTrailing) {
+                PersistentWebViewContainer(webView: browser.webView)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                if let ramImage = browser.latestEphemeralScreenshot, showEphemeralInspector {
+                    ephemeralScreenshotOverlay(image: ramImage)
+                        .padding(14)
+                }
+            }
+
+            if showConsoleDrawer {
                 Divider()
-                addressBar
-                Divider()
-
-                if let banner = statusBanner {
-                    HStack {
-                        Image(systemName: "info.circle.fill").foregroundStyle(ZinoTheme.statusInfo)
-                        Text(banner).font(.caption).lineLimit(2)
-                        Spacer()
-                        Button { statusBanner = nil } label: { Image(systemName: "xmark").font(.caption2) }.buttonStyle(.plain)
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 6)
-                    .background(ZinoTheme.statusInfo.opacity(0.10))
-                }
-
-                ZStack(alignment: .bottomTrailing) {
-                    PersistentWebViewContainer(webView: browser.webView)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                    if let ramImage = browser.latestEphemeralScreenshot, showEphemeralInspector {
-                        ephemeralScreenshotOverlay(image: ramImage)
-                            .padding(14)
-                    }
-                }
-
-                if showConsoleDrawer {
-                    Divider()
-                    consoleAndServerLogsDrawer
-                        .frame(height: 185)
-                }
+                consoleAndServerLogsDrawer
+                    .frame(height: 170)
             }
-            .background(ZinoTheme.surfacePrimary)
-            .navigationTitle(browser.pageTitle)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button {
-                        captureAndShowEphemeralVision()
-                    } label: {
-                        Label("AI Vision (RAM Only)", systemImage: "eye.circle")
-                    }
-
-                    Button {
-                        askAIToInspectCurrentPage()
-                    } label: {
-                        Label("Ask AI About Page", systemImage: "sparkles")
-                    }
-
-                    Button {
-                        showConsoleDrawer.toggle()
-                    } label: {
-                        Label("Console", systemImage: "terminal")
-                    }
-                }
-            }
-            .onAppear {
-                reloadFoldersAndHTMLFiles()
-            }
+        }
+        .background(ZinoTheme.surfacePrimary)
+        .onAppear {
+            reloadFoldersAndHTMLFiles()
         }
     }
 

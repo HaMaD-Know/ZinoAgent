@@ -1,6 +1,7 @@
 import Foundation
 
-/// Adapter for OpenAI and OpenAI-compatible endpoints (OpenAI, OpenRouter, Groq, Ollama, LM Studio).
+/// Adapter for OpenAI, OpenRouter (with Free/Paid model pricing metadata), and OpenAI-compatible endpoints
+/// (Ollama, LM Studio, Groq, Together, custom servers).
 public final class OpenAIProviderAdapter: OnlineAIProviderAdapter {
     public let providerType: ProviderType
     public let supportsModelDiscovery = true
@@ -12,7 +13,7 @@ public final class OpenAIProviderAdapter: OnlineAIProviderAdapter {
 
     public init(providerType: ProviderType = .openAI, http: HTTPClient = HTTPClient()) {
         self.providerType = providerType
-        self.supportsImageGeneration = (providerType == .openAI || providerType == .openAICompatible)
+        self.supportsImageGeneration = (providerType == .openAI || providerType == .openAICompatible || providerType == .openRouter)
         self.http = http
     }
 
@@ -35,28 +36,80 @@ public final class OpenAIProviderAdapter: OnlineAIProviderAdapter {
             throw ZinoError(code, "Model discovery failed (HTTP \(resp.statusCode)): \(detail)")
         }
 
-        guard let json = try? JSONSerialization.jsonObject(with: resp.data) as? [String: Any],
+        let isLocalServer = URL(string: config.baseURL)?.host.map(HTTPClient.isLocalNetworkHost) ?? false
+        return try Self.parseModelsResponse(data: resp.data, providerType: providerType, isLocalServer: isLocalServer)
+    }
+
+    public static func parseModelsResponse(
+        data: Data,
+        providerType: ProviderType,
+        isLocalServer: Bool = false
+    ) throws -> [AIModelDescriptor] {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let list = json["data"] as? [[String: Any]] else {
             throw ZinoError(.networkFailure, "Unexpected response format from /models endpoint.")
         }
 
-        let models = list.compactMap { item -> AIModelDescriptor? in
+        return list.compactMap { item -> AIModelDescriptor? in
             guard let id = item["id"] as? String, !id.isEmpty else { return nil }
+            let name = (item["name"] as? String)?.isEmpty == false ? (item["name"] as! String) : id
             let lower = id.lowercased()
-            let isImageModel = lower.contains("dall-e") || lower.contains("gpt-image") || lower.contains("flux")
-            let isVision = lower.contains("gpt-4") || lower.contains("gpt-5") || lower.contains("o1") || lower.contains("o3") || lower.contains("o4") || lower.contains("vision") || lower.contains("llava")
-            let ctx = (item["context_length"] as? Int) ?? (lower.contains("gpt-4o") || lower.contains("gpt-4.1") || lower.contains("o3") ? 128_000 : 32_768)
+            let isImageModel = lower.contains("dall-e") || lower.contains("gpt-image") || lower.contains("flux") || lower.contains("imagen")
+
+            var isVision = lower.contains("gpt-4") || lower.contains("gpt-5") || lower.contains("o1") || lower.contains("o3") || lower.contains("o4") || lower.contains("vision") || lower.contains("llava") || lower.contains("claude-3") || lower.contains("claude-sonnet-4") || lower.contains("claude-opus-4") || lower.contains("gemini")
+            if let arch = item["architecture"] as? [String: Any],
+               let modality = (arch["modality"] as? String)?.lowercased() {
+                if modality.contains("image") { isVision = true }
+            }
+
+            let ctx = (item["context_length"] as? Int)
+                ?? ((item["top_provider"] as? [String: Any])?["context_length"] as? Int)
+                ?? (lower.contains("gpt-4o") || lower.contains("gpt-4.1") || lower.contains("o3") ? 128_000 : 32_768)
+
+            // Determine Free vs Paid tier accurately.
+            let tier: ModelPricingTier
+            let pricingLabel: String?
+
+            if let pricing = item["pricing"] as? [String: Any] {
+                let promptVal = Double("\(pricing["prompt"] ?? "")") ?? -1
+                let compVal = Double("\(pricing["completion"] ?? "")") ?? -1
+                if lower.hasSuffix(":free") || (promptVal == 0 && compVal == 0) {
+                    tier = .free
+                    pricingLabel = "Free"
+                } else if promptVal >= 0 && compVal >= 0 {
+                    tier = .paid
+                    let inPerM = promptVal * 1_000_000
+                    let outPerM = compVal * 1_000_000
+                    pricingLabel = String(format: "$%.2f / $%.2f per 1M", inPerM, outPerM)
+                } else {
+                    tier = lower.hasSuffix(":free") ? .free : .paid
+                    pricingLabel = tier == .free ? "Free" : "Paid"
+                }
+            } else if providerType == .openAICompatible && isLocalServer {
+                tier = .free
+                pricingLabel = "Local (Free)"
+            } else if lower.hasSuffix(":free") || lower.contains("-free") {
+                tier = .free
+                pricingLabel = "Free"
+            } else {
+                tier = .paid
+                pricingLabel = "Paid API"
+            }
+
             return AIModelDescriptor(
                 id: id,
-                displayName: id,
+                displayName: name,
                 contextWindow: ctx,
                 supportsVision: isVision,
                 supportsTools: !isImageModel,
-                supportsImageGeneration: isImageModel
+                supportsImageGeneration: isImageModel,
+                pricingTier: tier,
+                pricingLabel: pricingLabel
             )
-        }.sorted { $0.id.localizedStandardCompare($1.id) == .orderedAscending }
-
-        return models
+        }.sorted { a, b in
+            if a.pricingTier != b.pricingTier { return a.pricingTier == .free }
+            return a.displayName.localizedStandardCompare(b.displayName) == .orderedAscending
+        }
     }
 
     public func streamChat(request: OnlineChatRequest, config: ProviderConfiguration, apiKey: String?) -> AsyncThrowingStream<StreamChunk, Error> {
@@ -257,6 +310,10 @@ public final class OpenAIProviderAdapter: OnlineAIProviderAdapter {
     private func applyAuth(_ request: inout URLRequest, apiKey: String?) {
         if let key = apiKey, !key.isEmpty {
             request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        }
+        if providerType == .openRouter {
+            request.setValue("https://zinoagent.app", forHTTPHeaderField: "HTTP-Referer")
+            request.setValue("ZinoAgent 2.0", forHTTPHeaderField: "X-Title")
         }
     }
 }

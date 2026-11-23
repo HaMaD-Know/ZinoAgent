@@ -65,4 +65,61 @@ final class ProviderAdapterTests: XCTestCase {
         XCTAssertNoThrow(try HTTPClient.validateURL(URL(string: "http://localhost:11434/v1/models")!))
         XCTAssertNoThrow(try HTTPClient.validateURL(URL(string: "http://192.168.1.42:1234/v1/models")!))
     }
+
+    func testOpenRouterParsesFreeAndPaidModelsWithHeaders() throws {
+        let adapter = OpenAIProviderAdapter(providerType: .openRouter)
+        let config = ProviderConfiguration(name: "OpenRouter", providerType: .openRouter)
+        let req = OnlineChatRequest(
+            modelID: "meta-llama/llama-3.3-70b-instruct:free",
+            messages: [ProviderChatMessage(role: .user, content: "Hello")],
+            config: GenerationConfig()
+        )
+        let urlReq = try adapter.buildChatURLRequest(request: req, config: config, apiKey: "sk-or-v1-test1234567890")
+        XCTAssertEqual(urlReq.url?.absoluteString, "https://openrouter.ai/api/v1/chat/completions")
+        XCTAssertEqual(urlReq.value(forHTTPHeaderField: "X-Title"), "ZinoAgent 2.0")
+
+        let sampleJSON = """
+        {
+          "data": [
+            {
+              "id": "meta-llama/llama-3.3-70b-instruct:free",
+              "name": "Llama 3.3 70B Instruct (free)",
+              "context_length": 131072,
+              "pricing": {"prompt": "0", "completion": "0"}
+            },
+            {
+              "id": "anthropic/claude-sonnet-4",
+              "name": "Claude Sonnet 4",
+              "context_length": 200000,
+              "pricing": {"prompt": "0.000003", "completion": "0.000015"}
+            }
+          ]
+        }
+        """
+        let models = try OpenAIProviderAdapter.parseModelsResponse(data: Data(sampleJSON.utf8), providerType: .openRouter)
+        XCTAssertEqual(models.count, 2)
+        XCTAssertEqual(models[0].pricingTier, .free)
+        XCTAssertEqual(models[0].id, "meta-llama/llama-3.3-70b-instruct:free")
+        XCTAssertEqual(models[1].pricingTier, .paid)
+        XCTAssertEqual(models[1].pricingLabel, "$3.00 / $15.00 per 1M")
+    }
+
+    func testLocalOfflineMessageNormalizationMergesSystemAndToolTurns() {
+        let raw: [ChatTemplateFormatter.PromptMessage] = [
+            .init(role: "system", content: "Base system"),
+            .init(role: "system", content: "Retrieved history"),
+            .init(role: "user", content: "Create snake.html"),
+            .init(role: "assistant", content: "Calling generate_file"),
+            .init(role: "tool", content: "Saved snake.html"),
+            .init(role: "user", content: "Now open it")
+        ]
+        let normalized = LlamaCppEngine.normalizeMessagesForLocalTemplate(raw)
+        XCTAssertEqual(normalized.count, 4) // 1 merged system + user + assistant + merged (tool+user)
+        XCTAssertEqual(normalized[0].role, "system")
+        XCTAssertTrue(normalized[0].content.contains("Base system"))
+        XCTAssertTrue(normalized[0].content.contains("Retrieved history"))
+        XCTAssertEqual(normalized[3].role, "user")
+        XCTAssertTrue(normalized[3].content.contains("[Tool Result]"))
+        XCTAssertTrue(normalized[3].content.contains("Now open it"))
+    }
 }

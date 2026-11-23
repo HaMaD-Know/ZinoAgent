@@ -51,13 +51,17 @@ public final class GeminiProviderAdapter: OnlineAIProviderAdapter {
             guard supportsGen || supportsPredict else { return nil }
             let display = (item["displayName"] as? String) ?? id
             let inputLimit = (item["inputTokenLimit"] as? Int) ?? 128_000
+            let lower = id.lowercased()
+            let hasFreeTier = lower.contains("flash") || lower.contains("gemma") || lower.contains("lite")
             return AIModelDescriptor(
                 id: id,
                 displayName: display,
                 contextWindow: inputLimit,
                 supportsVision: supportsGen,
                 supportsTools: supportsGen,
-                supportsImageGeneration: supportsPredict
+                supportsImageGeneration: supportsPredict,
+                pricingTier: hasFreeTier ? .free : .paid,
+                pricingLabel: hasFreeTier ? "Free Tier Available" : "Paid Tier"
             )
         }
     }

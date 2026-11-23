@@ -19,41 +19,46 @@ public struct TerminalView: View {
     }
 
     public var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                topStatusAndQuickBar
-                Divider()
-                transcriptArea
-                Divider()
-                commandComposer
-            }
-            .background(Color(red: 0.07, green: 0.08, blue: 0.10))
-            .navigationTitle("Workspace Terminal")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    if !mountedFolders.isEmpty {
-                        Menu {
-                            ForEach(mountedFolders) { folder in
-                                Button(folder.displayName) {
-                                    terminal.switchMountedFolder(folder)
-                                }
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                if !mountedFolders.isEmpty {
+                    Menu {
+                        ForEach(mountedFolders) { folder in
+                            Button(folder.displayName) {
+                                terminal.switchMountedFolder(folder)
                             }
-                        } label: {
-                            Label(terminal.activeFolder?.displayName ?? "Folder", systemImage: "folder")
                         }
-                    }
-                    Button {
-                        terminal.clearTranscript()
                     } label: {
-                        Label("Clear", systemImage: "trash")
+                        Label(terminal.activeFolder?.displayName ?? "Folder", systemImage: "folder.fill")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.white)
                     }
                 }
+                Spacer()
+                Button {
+                    terminal.clearTranscript()
+                } label: {
+                    Label("Clear", systemImage: "trash")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
             }
-            .onAppear {
-                terminal.syncActiveFolder()
-                mountedFolders = (try? coordinator.bookmarkManager.loadFolders()) ?? []
-            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color(red: 0.12, green: 0.13, blue: 0.17))
+
+            Divider()
+            topStatusAndQuickBar
+            Divider()
+            transcriptArea
+            Divider()
+            commandComposer
+        }
+        .background(Color(red: 0.07, green: 0.08, blue: 0.10))
+        .onAppear {
+            terminal.syncActiveFolder()
+            mountedFolders = (try? coordinator.bookmarkManager.loadFolders()) ?? []
         }
     }
 
