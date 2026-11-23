@@ -18,6 +18,7 @@ public struct StorageBreakdown: Sendable, Equatable {
 /// Manages all app-owned storage directories. Large model weights and media live on disk outside SQLite.
 public final class AppStoragePaths: Sendable {
     public let rootDirectory: URL
+    public let workspaceDirectory: URL
     public let databaseDirectory: URL
     public let localModelsDirectory: URL
     public let diffusionModelsDirectory: URL
@@ -35,6 +36,7 @@ public final class AppStoragePaths: Sendable {
             .appendingPathComponent("ZinoAgent", isDirectory: true))
 
         self.rootDirectory = appSupport
+        self.workspaceDirectory = appSupport.appendingPathComponent("Workspace", isDirectory: true)
         self.databaseDirectory = appSupport.appendingPathComponent("Database", isDirectory: true)
         self.localModelsDirectory = appSupport.appendingPathComponent("Models/GGUF", isDirectory: true)
         self.diffusionModelsDirectory = appSupport.appendingPathComponent("Models/CoreMLDiffusion", isDirectory: true)
@@ -50,7 +52,7 @@ public final class AppStoragePaths: Sendable {
     public func ensureDirectoriesExist() {
         let fm = FileManager.default
         let dirs = [
-            rootDirectory, databaseDirectory, localModelsDirectory, diffusionModelsDirectory,
+            rootDirectory, workspaceDirectory, databaseDirectory, localModelsDirectory, diffusionModelsDirectory,
             generatedImagesDirectory, threeDProjectsDirectory, exportsDirectory, cacheDirectory, tempDirectory
         ]
         for dir in dirs {

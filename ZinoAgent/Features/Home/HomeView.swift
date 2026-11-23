@@ -100,6 +100,15 @@ public struct HomeView: View {
                 quickActionButton(title: "New AI Chat", subtitle: coordinator.settings.defaultAIMode.shortName, icon: "plus.bubble.fill", tint: .indigo) {
                     coordinator.openNewChat()
                 }
+                quickActionButton(title: "Custom Browser", subtitle: coordinator.localHTTPServer.isRunning ? "Server :\(coordinator.localHTTPServer.port)" : "Local Server & Vision", icon: "globe", tint: .cyan) {
+                    coordinator.selectedSection = .browser
+                }
+                quickActionButton(title: "Terminal", subtitle: "Shell, JS, gh & cf", icon: "terminal.fill", tint: .mint) {
+                    coordinator.selectedSection = .terminal
+                }
+                quickActionButton(title: "Skills & Plugins", subtitle: "GitHub & Cloudflare", icon: "puzzlepiece.extension.fill", tint: .pink) {
+                    coordinator.selectedSection = .skillsAndPlugins
+                }
                 quickActionButton(title: "Open 3D Model", subtitle: "GLB, USDZ, OBJ, STL", icon: "cube.fill", tint: .teal) {
                     coordinator.selectedSection = .threeDStudio
                 }

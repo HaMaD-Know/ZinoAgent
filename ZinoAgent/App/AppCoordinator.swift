@@ -13,6 +13,8 @@ public final class AppCoordinator: ObservableObject {
     // Cross-feature handoff triggers
     @Published public var pendingChatDraft: String?
     @Published public var pendingChatAttachments: [ChatAttachment] = []
+    /// Ephemeral browser screenshot kept strictly in RAM for AI vision — NEVER written to disk.
+    @Published public var pendingEphemeralBrowserImage: ChatImagePayload?
     @Published public var pendingThreeDFileURL: URL?
     @Published public var requestNewChatID: UUID?
     @Published public var requestOpenProviderSetup: Bool = false
@@ -32,6 +34,14 @@ public final class AppCoordinator: ObservableObject {
     public let fileService: FileManagerService
     public let permissionService: PermissionService
     public let exportService: ExportService
+
+    // Browser, Local Server, Terminal, Skills & Plugins
+    public let localHTTPServer: LocalHTTPServer
+    public let browserService: ZinoBrowserService
+    public let skillRegistry: SkillRegistryService
+    public let githubPlugin: GitHubPluginService
+    public let cloudflarePlugin: CloudflarePluginService
+    public let terminalService: ZinoTerminalService
 
     // AI Subsystems
     public let modelRegistry: ModelRegistryService
@@ -74,13 +84,34 @@ public final class AppCoordinator: ObservableObject {
         let convRepo = ConversationRepository(database: db)
         self.conversationRepository = convRepo
 
-        let bm = SecurityScopedBookmarkManager(database: db)
+        let bm = SecurityScopedBookmarkManager(database: db, defaultWorkspaceURL: paths.workspaceDirectory)
         self.bookmarkManager = bm
         let fmService = FileManagerService(database: db, bookmarks: bm)
         self.fileService = fmService
         let permService = PermissionService(database: db)
         self.permissionService = permService
         self.exportService = ExportService(storagePaths: paths, conversationRepository: convRepo)
+
+        // Browser, Local Server, Skills, Plugins & Terminal
+        let httpServer = LocalHTTPServer(bookmarks: bm)
+        self.localHTTPServer = httpServer
+        let browser = ZinoBrowserService(localServer: httpServer, bookmarks: bm)
+        self.browserService = browser
+        let skills = SkillRegistryService(database: db)
+        self.skillRegistry = skills
+        let gh = GitHubPluginService(database: db, keychain: keychainStore)
+        self.githubPlugin = gh
+        let cf = CloudflarePluginService(database: db, keychain: keychainStore)
+        self.cloudflarePlugin = cf
+        let terminal = ZinoTerminalService(
+            fileService: fmService,
+            browserService: browser,
+            githubPlugin: gh,
+            cloudflarePlugin: cf,
+            skillRegistry: skills,
+            resourceMonitor: monitor
+        )
+        self.terminalService = terminal
 
         let mRegistry = ModelRegistryService(database: db, storagePaths: paths, resourceMonitor: monitor)
         self.modelRegistry = mRegistry
@@ -99,11 +130,16 @@ public final class AppCoordinator: ObservableObject {
         contextEngine.syncConfiguration(from: settingsManager)
         self.smartContextEngine = contextEngine
 
-        self.fileToolExecutor = FileToolExecutor(
+        let toolExec = FileToolExecutor(
             fileService: fmService,
             permissionService: permService,
             storagePaths: paths
         )
+        toolExec.browserService = browser
+        toolExec.terminalService = terminal
+        toolExec.githubPlugin = gh
+        toolExec.cloudflarePlugin = cf
+        self.fileToolExecutor = toolExec
 
         self.imageGenerationService = ImageGenerationService(
             database: db,
@@ -138,6 +174,8 @@ public final class AppCoordinator: ObservableObject {
             guard let self else { return }
             guard self.settings.autoUnloadOnMemoryWarning else { return }
             Task { @MainActor in
+                // Free ephemeral in-memory browser screenshot buffer first under critical memory pressure.
+                self.browserService.clearEphemeralScreenshotFromRAM()
                 if self.offlineEngine.loadState.isLoaded && !self.offlineEngine.isGenerating {
                     await self.offlineEngine.unload()
                     self.systemBannerMessage = "Unloaded idle local LLM due to iPadOS memory pressure."
@@ -148,7 +186,6 @@ public final class AppCoordinator: ObservableObject {
             }
         }
 
-        // Propagate engine/registry status changes so sidebar & Home dashboard stay live.
         offlineEngine.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
@@ -159,6 +196,9 @@ public final class AppCoordinator: ObservableObject {
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
         resourceMonitor.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+        browserService.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
     }

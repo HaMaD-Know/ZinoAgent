@@ -20,6 +20,10 @@ public final class AIChatViewModel: ObservableObject {
 
     @Published public var inputText: String = ""
     @Published public var draftAttachments: [ChatAttachment] = []
+    /// Ephemeral RAM-only browser screenshots indexed by message ID (never written to device storage).
+    @Published public private(set) var ephemeralImagesByMessageID: [String: ChatImagePayload] = [:]
+    @Published public var pendingEphemeralDraftImage: ChatImagePayload?
+
     @Published public var isGenerating: Bool = false
     @Published public var streamingText: String = ""
     @Published public var streamingThinking: String = ""
@@ -51,6 +55,10 @@ public final class AIChatViewModel: ObservableObject {
         if !coordinator.pendingChatAttachments.isEmpty {
             draftAttachments.append(contentsOf: coordinator.pendingChatAttachments)
             coordinator.pendingChatAttachments = []
+        }
+        if let ramImg = coordinator.pendingEphemeralBrowserImage {
+            pendingEphemeralDraftImage = ramImg
+            coordinator.pendingEphemeralBrowserImage = nil
         }
     }
 
@@ -134,7 +142,6 @@ public final class AIChatViewModel: ObservableObject {
         }
     }
 
-    /// Switches between Offline and Online mode WITHOUT deleting conversation history.
     public func switchMode(to newMode: AIMode) {
         guard var conv = activeConversation else { return }
         conv.mode = newMode
@@ -183,7 +190,6 @@ public final class AIChatViewModel: ObservableObject {
             let isImage = ["png", "jpg", "jpeg", "webp", "heic", "gif"].contains(ext)
             let is3D = ["glb", "gltf", "usdz", "obj", "stl"].contains(ext)
 
-            // Stage a local copy in temp directory so attachments remain readable during async streaming.
             let stagedURL = coordinator.storagePaths.tempDirectory.appendingPathComponent("\(UUID().uuidString)-\(url.lastPathComponent)")
             try? FileManager.default.copyItem(at: url, to: stagedURL)
 
@@ -222,6 +228,18 @@ public final class AIChatViewModel: ObservableObject {
         }
     }
 
+    public func attachCurrentBrowserEphemeralScreenshot() {
+        Task {
+            let snap = await coordinator.browserService.captureEphemeralVisionSnapshot()
+            if let png = snap.inMemoryPNGData {
+                pendingEphemeralDraftImage = ChatImagePayload(mimeType: "image/png", base64Data: png.base64EncodedString())
+            }
+            if inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                inputText = "Inspect the current browser page (\(snap.pageTitle) at \(snap.pageURL))."
+            }
+        }
+    }
+
     public func removeDraftAttachment(_ attachment: ChatAttachment) {
         draftAttachments.removeAll { $0.id == attachment.id }
     }
@@ -230,11 +248,10 @@ public final class AIChatViewModel: ObservableObject {
 
     public func sendCurrentInput() {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty || !draftAttachments.isEmpty else { return }
+        guard !text.isEmpty || !draftAttachments.isEmpty || pendingEphemeralDraftImage != nil else { return }
         if activeConversation == nil { createNewConversation() }
         guard let conv = activeConversation else { return }
 
-        // Privacy gate: require explicit user consent before transmitting attached file contents to an online provider.
         if conv.mode == .online,
            !draftAttachments.isEmpty,
            coordinator.settings.requireConsentBeforeOnlineFileUpload,
@@ -274,7 +291,7 @@ public final class AIChatViewModel: ObservableObject {
             messages.removeLast()
         }
         guard let lastUser = messages.last(where: { $0.role == .user }) else { return }
-        runAssistantTurn(for: conv, latestQuery: lastUser.content)
+        runAssistantTurn(for: conv, latestQuery: lastUser.content, remainingToolDepth: 4)
     }
 
     public func editMessage(_ message: ChatMessage, newContent: String) {
@@ -300,8 +317,10 @@ public final class AIChatViewModel: ObservableObject {
 
     public func approveToolProposal(_ proposal: PendingToolProposal) {
         pendingToolProposals.removeAll { $0.id == proposal.id }
-        let outcome = coordinator.fileToolExecutor.executeApprovedProposal(proposal)
-        handleToolResult(toolCallID: proposal.toolCallID, toolName: proposal.toolName.rawValue, outcome: outcome)
+        Task {
+            let outcome = await coordinator.fileToolExecutor.executeApprovedProposalAsync(proposal)
+            handleToolResult(toolCallID: proposal.toolCallID, toolName: proposal.toolName.rawValue, outcome: outcome)
+        }
     }
 
     public func rejectToolProposal(_ proposal: PendingToolProposal) {
@@ -310,7 +329,8 @@ public final class AIChatViewModel: ObservableObject {
         appendToolMessage(
             toolCallID: proposal.toolCallID,
             toolName: proposal.toolName.rawValue,
-            content: "User declined operation: \(proposal.previewSummary)"
+            content: "User declined operation: \(proposal.previewSummary)",
+            ephemeralImage: nil
         )
     }
 
@@ -350,16 +370,21 @@ public final class AIChatViewModel: ObservableObject {
         }
     }
 
-    // MARK: - Core Turn Execution
+    // MARK: - Core Turn Execution (Offline + Online Unified Tool Loop)
 
     private func commitAndStreamUserMessage(text: String, attachments: [ChatAttachment]) {
         guard var conv = activeConversation else { return }
         let userMessage = ChatMessage(
             conversationID: conv.id,
             role: .user,
-            content: text.isEmpty ? "Please analyze the attached file(s)." : text,
+            content: text.isEmpty ? "Please analyze the attached file(s) / browser snapshot." : text,
             attachments: attachments
         )
+        if let ramImg = pendingEphemeralDraftImage {
+            ephemeralImagesByMessageID[userMessage.id] = ramImg
+            pendingEphemeralDraftImage = nil
+        }
+
         do {
             try coordinator.conversationRepository.saveMessage(userMessage)
             messages.append(userMessage)
@@ -380,13 +405,24 @@ public final class AIChatViewModel: ObservableObject {
                 subtitle: "\(conv.mode.shortName) • \(messages.count) messages",
                 referenceID: conv.id
             )
-            runAssistantTurn(for: conv, latestQuery: userMessage.content)
+            runAssistantTurn(for: conv, latestQuery: userMessage.content, remainingToolDepth: 5)
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    private func runAssistantTurn(for conversation: ChatConversation, latestQuery: String) {
+    private func buildEnrichedSystemPrompt(for conversation: ChatConversation, userQuery: String) -> String {
+        let base = conversation.systemPrompt ?? coordinator.settings.defaultSystemPrompt
+        let workspaceSummary = coordinator.fileToolExecutor.buildLiveWorkspaceContextSummary()
+        let skillsBlock = coordinator.skillRegistry.activeSkillsPromptBlock(for: userQuery)
+        let toolBlock = FileToolDefinitions.offlineToolPromptBlock(for: coordinator.settings.aiFilePermissionLevel)
+
+        return [base, workspaceSummary, skillsBlock, toolBlock]
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
+    }
+
+    private func runAssistantTurn(for conversation: ChatConversation, latestQuery: String, remainingToolDepth: Int) {
         stopGeneration()
         isGenerating = true
         streamingText = ""
@@ -404,10 +440,11 @@ public final class AIChatViewModel: ObservableObject {
                 let tokenizer = self.activeTokenizer(for: conversation)
                 let ctxWindow = self.activeModelContextWindow(for: conversation)
                 let imageMap = self.buildImagePayloadsByMessageID()
+                let fullSystemPrompt = self.buildEnrichedSystemPrompt(for: conversation, userQuery: latestQuery)
 
                 let assembled = try await self.coordinator.smartContextEngine.assembleContext(
                     conversationID: conversation.id,
-                    systemPrompt: conversation.systemPrompt ?? self.coordinator.settings.defaultSystemPrompt,
+                    systemPrompt: fullSystemPrompt,
                     allMessages: self.messages,
                     currentUserQuery: latestQuery,
                     modelContextWindow: ctxWindow,
@@ -470,8 +507,7 @@ public final class AIChatViewModel: ObservableObject {
                     providerLabel = provider.name
                     modelLabel = modelID
 
-                    let folders = (try? self.coordinator.bookmarkManager.loadFolders()) ?? []
-                    let tools = folders.isEmpty ? [] : FileToolDefinitions.schemas(for: self.coordinator.settings.aiFilePermissionLevel)
+                    let tools = FileToolDefinitions.schemas(for: self.coordinator.settings.aiFilePermissionLevel)
 
                     let request = OnlineChatRequest(
                         modelID: modelID,
@@ -499,6 +535,12 @@ public final class AIChatViewModel: ObservableObject {
                     }
                 }
 
+                // Also parse `<tool_call>{...}</tool_call>` blocks emitted by Offline GGUF models or OpenAI-compatible servers.
+                if toolCalls.isEmpty {
+                    let parsedStructured = FileToolDefinitions.extractStructuredToolCalls(from: collectedText)
+                    toolCalls.append(contentsOf: parsedStructured)
+                }
+
                 if !collectedText.isEmpty || !collectedThinking.isEmpty {
                     let assistantMsg = ChatMessage(
                         conversationID: conversation.id,
@@ -516,28 +558,32 @@ public final class AIChatViewModel: ObservableObject {
                 self.streamingText = ""
                 self.streamingThinking = ""
 
-                // Evaluate any AI file tool calls through the permission-aware FileToolExecutor.
+                // Execute tool calls through the permission-aware FileToolExecutor (covers Files, Local Server, Browser, Terminal, GitHub, Cloudflare).
                 var autoExecutedAny = false
                 for tc in toolCalls {
-                    let outcome = self.coordinator.fileToolExecutor.evaluate(
+                    let outcome = await self.coordinator.fileToolExecutor.evaluateAsync(
                         toolCall: tc,
                         conversationID: conversation.id,
                         globalPermissionLevel: self.coordinator.settings.aiFilePermissionLevel
                     )
                     switch outcome {
-                    case let .executed(output):
-                        self.appendToolMessage(toolCallID: tc.id, toolName: tc.name, content: output)
+                    case let .executed(output, ephemeralImage):
+                        self.appendToolMessage(toolCallID: tc.id, toolName: tc.name, content: output, ephemeralImage: ephemeralImage)
                         autoExecutedAny = true
                     case let .requiresConfirmation(proposal):
                         self.pendingToolProposals.append(proposal)
                     case let .denied(reason):
-                        self.appendToolMessage(toolCallID: tc.id, toolName: tc.name, content: "Denied: \(reason)")
+                        self.appendToolMessage(toolCallID: tc.id, toolName: tc.name, content: "Denied: \(reason)", ephemeralImage: nil)
                     }
                 }
 
                 self.refreshContextSnapshot()
-                if autoExecutedAny && !Task.isCancelled {
-                    self.runAssistantTurn(for: conversation, latestQuery: "Summarize the tool results for the user.")
+                if autoExecutedAny && remainingToolDepth > 0 && !Task.isCancelled {
+                    self.runAssistantTurn(
+                        for: conversation,
+                        latestQuery: "Continue based on the tool execution results above.",
+                        remainingToolDepth: remainingToolDepth - 1
+                    )
                 }
             } catch let zErr as ZinoError where zErr.code == .cancelled {
                 self.commitPartialStreamIfNeeded(conversation: conversation)
@@ -551,29 +597,33 @@ public final class AIChatViewModel: ObservableObject {
 
     private func handleToolResult(toolCallID: String, toolName: String, outcome: ToolEvaluationOutcome) {
         switch outcome {
-        case let .executed(output):
-            appendToolMessage(toolCallID: toolCallID, toolName: toolName, content: output)
+        case let .executed(output, ephemeralImage):
+            appendToolMessage(toolCallID: toolCallID, toolName: toolName, content: output, ephemeralImage: ephemeralImage)
             if let conv = activeConversation {
-                runAssistantTurn(for: conv, latestQuery: "The user approved \(toolName). Continue responding.")
+                runAssistantTurn(for: conv, latestQuery: "The user approved \(toolName). Continue responding.", remainingToolDepth: 3)
             }
         case let .denied(reason):
-            appendToolMessage(toolCallID: toolCallID, toolName: toolName, content: "Failed: \(reason)")
+            appendToolMessage(toolCallID: toolCallID, toolName: toolName, content: "Failed: \(reason)", ephemeralImage: nil)
         case let .requiresConfirmation(p):
             pendingToolProposals.append(p)
         }
     }
 
-    private func appendToolMessage(toolCallID: String, toolName: String, content: String) {
+    private func appendToolMessage(toolCallID: String, toolName: String, content: String, ephemeralImage: ChatImagePayload?) {
         guard let conv = activeConversation else { return }
         let msg = ChatMessage(
             conversationID: conv.id,
             role: .tool,
             content: content,
-            providerLabel: "File Tool",
+            providerLabel: "Workspace Tool",
             modelLabel: toolName,
             toolCallID: toolCallID,
             toolName: toolName
         )
+        if let ephemeralImage {
+            // Keep strictly in RAM map for vision models — never written to disk!
+            ephemeralImagesByMessageID[msg.id] = ephemeralImage
+        }
         try? coordinator.conversationRepository.saveMessage(msg)
         messages.append(msg)
     }
@@ -658,6 +708,9 @@ public final class AIChatViewModel: ObservableObject {
                 if let data = try? Data(contentsOf: url) {
                     payloads.append(ChatImagePayload(mimeType: att.mimeType, base64Data: data.base64EncodedString()))
                 }
+            }
+            if let ramImg = ephemeralImagesByMessageID[msg.id] {
+                payloads.append(ramImg)
             }
             if !payloads.isEmpty {
                 result[msg.id] = payloads

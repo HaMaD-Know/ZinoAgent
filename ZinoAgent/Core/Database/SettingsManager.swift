@@ -40,7 +40,7 @@ public final class SettingsManager: ObservableObject {
     // Files
     @Published public var defaultFileViewMode: String = "grid" { didSet { persist("defaultFileViewMode", defaultFileViewMode) } }
     @Published public var defaultFileSort: String = "name" { didSet { persist("defaultFileSort", defaultFileSort) } }
-    @Published public var aiFilePermissionLevel: AIPermissionLevel = .confirm { didSet { persist("aiFilePermissionLevel", aiFilePermissionLevel.rawValue) } }
+    @Published public var aiFilePermissionLevel: AIPermissionLevel = .authorized { didSet { persist("aiFilePermissionLevel", aiFilePermissionLevel.rawValue) } }
 
     // 3D Studio
     @Published public var threeDLightingPreset: String = "studio" { didSet { persist("threeDLightingPreset", threeDLightingPreset) } }

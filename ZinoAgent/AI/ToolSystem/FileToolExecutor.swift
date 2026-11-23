@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 public struct PendingToolProposal: Identifiable, Sendable, Equatable {
     public let id: String
@@ -14,18 +15,23 @@ public struct PendingToolProposal: Identifiable, Sendable, Equatable {
 }
 
 public enum ToolEvaluationOutcome: Sendable {
-    case executed(output: String)
+    case executed(output: String, ephemeralImage: ChatImagePayload?)
     case requiresConfirmation(PendingToolProposal)
     case denied(reason: String)
 }
 
-/// Permission-aware AI file tool validator and executor.
-/// Validates folder scope, file existence, types, destination safety (never silent overwrite),
-/// and user authorization level before touching the filesystem.
+/// Permission-aware AI tool validator and executor for both Offline (llama.cpp) and Online AI.
+/// Covers user-selected folders, Local HTTP Server, Custom Browser (with ephemeral RAM-only screenshots),
+/// Workspace Terminal, GitHub Plugin, and Cloudflare Plugin.
 public final class FileToolExecutor: @unchecked Sendable {
     private let fileService: FileManagerService
     private let permissionService: PermissionService
     private let storagePaths: AppStoragePaths
+
+    @MainActor public weak var browserService: ZinoBrowserService?
+    @MainActor public weak var terminalService: ZinoTerminalService?
+    @MainActor public weak var githubPlugin: GitHubPluginService?
+    @MainActor public weak var cloudflarePlugin: CloudflarePluginService?
 
     public init(
         fileService: FileManagerService,
@@ -37,6 +43,44 @@ public final class FileToolExecutor: @unchecked Sendable {
         self.storagePaths = storagePaths
     }
 
+    /// Builds a live manifest of the user's provided/mounted folders, top-level files, running local server,
+    /// and browser state so both Offline and Online AI immediately know the user's folder contents.
+    @MainActor
+    public func buildLiveWorkspaceContextSummary() -> String {
+        let folders = (try? fileService.bookmarks.loadFolders()) ?? []
+        guard !folders.isEmpty else {
+            return "Mounted Folders: None selected yet."
+        }
+
+        let primary = folders[0]
+        var lines: [String] = [
+            "### User's Mounted Folders & Active Workspace",
+            "Active Primary Folder: '\(primary.displayName)' (Permission: \(primary.permissionLevel.displayName))",
+            "All Mounted Folders: " + folders.map { "'\($0.displayName)'" }.joined(separator: ", ")
+        ]
+
+        if let items = try? fileService.listDirectory(in: primary, directoryURL: nil) {
+            let listing = items.prefix(35).map { item in
+                item.isDirectory ? "\(item.name)/" : "\(item.name) (\(Formatters.bytes(item.sizeBytes)))"
+            }.joined(separator: ", ")
+            lines.append("Files in '\(primary.displayName)': \(listing.isEmpty ? "(empty folder)" : listing)")
+        }
+
+        if let browser = browserService {
+            if browser.localServer.isRunning {
+                lines.append("Local HTTP Server: RUNNING at \(browser.localServer.baseURLString) (serving '\(browser.localServer.activeFolder?.displayName ?? primary.displayName)')")
+            } else {
+                lines.append("Local HTTP Server: Stopped (use `open_in_browser` or `start_local_server` to start automatically)")
+            }
+            if browser.currentURLString != "about:blank" {
+                lines.append("Custom Browser Current Page: \(browser.pageTitle) (\(browser.currentURLString))")
+            }
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    /// Synchronous evaluation entry point for pure-filesystem unit tests and quick checks.
     public func evaluate(
         toolCall: ToolCallRequest,
         conversationID: String,
@@ -56,15 +100,9 @@ public final class FileToolExecutor: @unchecked Sendable {
         }
 
         let args = parseJSONArguments(toolCall.argumentsJSON)
-        let folders: [MountedFolder]
-        do {
-            folders = try fileService.bookmarks.loadFolders()
-        } catch {
-            return .denied(reason: "Could not read mounted folders: \(error.localizedDescription)")
-        }
-
-        guard !folders.isEmpty else {
-            let msg = "No folders have been selected from Apple Files yet. Open the Files tab and add a folder first."
+        let folders = (try? fileService.bookmarks.loadFolders()) ?? []
+        guard let targetFolder = resolveTargetFolder(requestedName: args["folder_name"] as? String, folders: folders) else {
+            let msg = "No folders are mounted. Select a folder in the Files tab first."
             permissionService.logToolActivity(
                 conversationID: conversationID,
                 toolName: tool.rawValue,
@@ -76,24 +114,10 @@ public final class FileToolExecutor: @unchecked Sendable {
             return .denied(reason: msg)
         }
 
-        let requestedFolderName = args["folder_name"] as? String
-        let targetFolder: MountedFolder
-        if let requested = requestedFolderName, !requested.isEmpty {
-            guard let found = folders.first(where: { $0.displayName.caseInsensitiveCompare(requested) == .orderedSame }) else {
-                let names = folders.map(\.displayName).joined(separator: ", ")
-                return .denied(reason: "Folder '\(requested)' is not mounted. Available permitted folders: \(names).")
-            }
-            targetFolder = found
-        } else {
-            targetFolder = folders[0]
-        }
-
-        // Effective permission is the stricter of global setting and folder-specific setting.
         let effectiveLevel = stricterPermission(globalPermissionLevel, targetFolder.permissionLevel)
 
-        // Read-only tools execute directly within the permitted folder scope.
         if tool.risk == .readOnly {
-            return executeValidated(
+            return executeSyncFilesystemTool(
                 tool: tool,
                 args: args,
                 folder: targetFolder,
@@ -103,10 +127,9 @@ public final class FileToolExecutor: @unchecked Sendable {
             )
         }
 
-        // Write/modify tools must respect permission levels!
         switch effectiveLevel {
         case .readOnly:
-            let msg = "Operation '\(tool.displayTitle)' blocked: AI file permission is set to Read-only."
+            let msg = "Operation '\(tool.displayTitle)' blocked: AI permission is set to Read-only."
             permissionService.logToolActivity(
                 conversationID: conversationID,
                 toolName: tool.rawValue,
@@ -117,7 +140,7 @@ public final class FileToolExecutor: @unchecked Sendable {
             )
             return .denied(reason: msg)
 
-        case .suggest:
+        case .suggest, .confirm:
             let proposal = PendingToolProposal(
                 id: UUID().uuidString,
                 conversationID: conversationID,
@@ -128,44 +151,21 @@ public final class FileToolExecutor: @unchecked Sendable {
                 argumentsJSON: toolCall.argumentsJSON,
                 previewSummary: describeProposal(tool: tool, args: args, folderName: targetFolder.displayName),
                 risk: tool.risk,
-                isSuggestionOnly: true
+                isSuggestionOnly: effectiveLevel == .suggest
             )
             permissionService.logToolActivity(
                 conversationID: conversationID,
                 toolName: tool.rawValue,
                 argumentsJSON: toolCall.argumentsJSON,
                 permissionLevel: effectiveLevel,
-                status: "suggested",
-                resultSummary: proposal.previewSummary
-            )
-            return .requiresConfirmation(proposal)
-
-        case .confirm:
-            let proposal = PendingToolProposal(
-                id: UUID().uuidString,
-                conversationID: conversationID,
-                toolCallID: toolCall.id,
-                toolName: tool,
-                folderID: targetFolder.id,
-                folderName: targetFolder.displayName,
-                argumentsJSON: toolCall.argumentsJSON,
-                previewSummary: describeProposal(tool: tool, args: args, folderName: targetFolder.displayName),
-                risk: tool.risk,
-                isSuggestionOnly: false
-            )
-            permissionService.logToolActivity(
-                conversationID: conversationID,
-                toolName: tool.rawValue,
-                argumentsJSON: toolCall.argumentsJSON,
-                permissionLevel: effectiveLevel,
-                status: "awaiting_confirmation",
+                status: effectiveLevel == .suggest ? "suggested" : "awaiting_confirmation",
                 resultSummary: proposal.previewSummary
             )
             return .requiresConfirmation(proposal)
 
         case .authorized:
             if tool.risk == .nonDestructiveWrite {
-                return executeValidated(
+                return executeSyncFilesystemTool(
                     tool: tool,
                     args: args,
                     folder: targetFolder,
@@ -174,7 +174,6 @@ public final class FileToolExecutor: @unchecked Sendable {
                     permissionLevel: effectiveLevel
                 )
             } else {
-                // Modifying/moving existing files still requires explicit confirmation for safety.
                 let proposal = PendingToolProposal(
                     id: UUID().uuidString,
                     conversationID: conversationID,
@@ -192,12 +191,65 @@ public final class FileToolExecutor: @unchecked Sendable {
         }
     }
 
+    /// Async evaluation supporting Browser, Local HTTP Server, Ephemeral RAM Screenshots, Terminal, GitHub, and Cloudflare tools.
+    @MainActor
+    public func evaluateAsync(
+        toolCall: ToolCallRequest,
+        conversationID: String,
+        globalPermissionLevel: AIPermissionLevel
+    ) async -> ToolEvaluationOutcome {
+        guard let tool = FileToolName(rawValue: toolCall.name) else {
+            return evaluate(toolCall: toolCall, conversationID: conversationID, globalPermissionLevel: globalPermissionLevel)
+        }
+
+        switch tool {
+        case .startLocalServer, .openInBrowser, .captureBrowserScreenshot,
+             .runBrowserJavaScript, .runTerminalCommand, .githubPlugin, .cloudflarePlugin:
+            let args = parseJSONArguments(toolCall.argumentsJSON)
+            let folders = (try? fileService.bookmarks.loadFolders()) ?? []
+            guard let targetFolder = resolveTargetFolder(requestedName: args["folder_name"] as? String, folders: folders) else {
+                return .denied(reason: "No mounted folder available.")
+            }
+            let effectiveLevel = stricterPermission(globalPermissionLevel, targetFolder.permissionLevel)
+            if tool.risk != .readOnly {
+                if effectiveLevel == .readOnly {
+                    return .denied(reason: "Blocked under Read-only permission.")
+                }
+                if effectiveLevel == .suggest || effectiveLevel == .confirm {
+                    let proposal = PendingToolProposal(
+                        id: UUID().uuidString,
+                        conversationID: conversationID,
+                        toolCallID: toolCall.id,
+                        toolName: tool,
+                        folderID: targetFolder.id,
+                        folderName: targetFolder.displayName,
+                        argumentsJSON: toolCall.argumentsJSON,
+                        previewSummary: describeProposal(tool: tool, args: args, folderName: targetFolder.displayName),
+                        risk: tool.risk,
+                        isSuggestionOnly: effectiveLevel == .suggest
+                    )
+                    return .requiresConfirmation(proposal)
+                }
+            }
+            return await executeAsyncWorkspaceTool(
+                tool: tool,
+                args: args,
+                folder: targetFolder,
+                conversationID: conversationID,
+                argumentsJSON: toolCall.argumentsJSON,
+                permissionLevel: effectiveLevel
+            )
+        default:
+            return evaluate(toolCall: toolCall, conversationID: conversationID, globalPermissionLevel: globalPermissionLevel)
+        }
+    }
+
     public func executeApprovedProposal(_ proposal: PendingToolProposal) -> ToolEvaluationOutcome {
         guard let folder = (try? fileService.bookmarks.loadFolders())?.first(where: { $0.id == proposal.folderID }) else {
             return .denied(reason: "Mounted folder '\(proposal.folderName)' is no longer available.")
         }
         let args = parseJSONArguments(proposal.argumentsJSON)
-        return executeValidated(
+        return executeSyncFilesystemTool(
             tool: proposal.toolName,
             args: args,
             folder: folder,
@@ -205,6 +257,35 @@ public final class FileToolExecutor: @unchecked Sendable {
             argumentsJSON: proposal.argumentsJSON,
             permissionLevel: .confirm
         )
+    }
+
+    @MainActor
+    public func executeApprovedProposalAsync(_ proposal: PendingToolProposal) async -> ToolEvaluationOutcome {
+        guard let folder = (try? fileService.bookmarks.loadFolders())?.first(where: { $0.id == proposal.folderID }) else {
+            return .denied(reason: "Mounted folder '\(proposal.folderName)' is no longer available.")
+        }
+        let args = parseJSONArguments(proposal.argumentsJSON)
+        switch proposal.toolName {
+        case .startLocalServer, .openInBrowser, .captureBrowserScreenshot,
+             .runBrowserJavaScript, .runTerminalCommand, .githubPlugin, .cloudflarePlugin:
+            return await executeAsyncWorkspaceTool(
+                tool: proposal.toolName,
+                args: args,
+                folder: folder,
+                conversationID: proposal.conversationID,
+                argumentsJSON: proposal.argumentsJSON,
+                permissionLevel: .confirm
+            )
+        default:
+            return executeSyncFilesystemTool(
+                tool: proposal.toolName,
+                args: args,
+                folder: folder,
+                conversationID: proposal.conversationID,
+                argumentsJSON: proposal.argumentsJSON,
+                permissionLevel: .confirm
+            )
+        }
     }
 
     public func rejectProposal(_ proposal: PendingToolProposal) {
@@ -218,7 +299,202 @@ public final class FileToolExecutor: @unchecked Sendable {
         )
     }
 
-    private func executeValidated(
+    // MARK: - Async Browser / Server / Terminal / Plugin Execution
+
+    @MainActor
+    private func executeAsyncWorkspaceTool(
+        tool: FileToolName,
+        args: [String: Any],
+        folder: MountedFolder,
+        conversationID: String,
+        argumentsJSON: String,
+        permissionLevel: AIPermissionLevel
+    ) async -> ToolEvaluationOutcome {
+        do {
+            var output = ""
+            var ephemeralImagePayload: ChatImagePayload?
+
+            switch tool {
+            case .startLocalServer:
+                guard let browser = browserService else {
+                    throw ZinoError(.networkFailure, "Browser service is unavailable.")
+                }
+                let port = (args["port"] as? Int).map { UInt16(clamping: $0) } ?? 8080
+                let baseURL = try browser.localServer.start(serving: folder, preferredPort: port)
+                output = "Started Local HTTP Server at \(baseURL) serving folder '\(folder.displayName)'."
+
+            case .openInBrowser:
+                guard let browser = browserService else {
+                    throw ZinoError(.networkFailure, "Browser service is unavailable.")
+                }
+                let rel = (args["relative_path"] as? String) ?? ""
+                let openedURL: String
+                if rel.hasPrefix("http://") || rel.hasPrefix("https://") {
+                    browser.loadURLString(rel)
+                    openedURL = rel
+                } else {
+                    openedURL = try browser.serveAndOpenFile(relativePath: rel, in: folder)
+                }
+                // Wait briefly for WKWebView to render and capture an ephemeral RAM-only snapshot automatically!
+                try? await Task.sleep(nanoseconds: 550_000_000)
+                let snap = await browser.captureEphemeralVisionSnapshot()
+                if let png = snap.inMemoryPNGData {
+                    ephemeralImagePayload = ChatImagePayload(mimeType: "image/png", base64Data: png.base64EncodedString())
+                }
+                output = """
+                Opened \(openedURL) in ZinoAgent Custom Browser (serving '\(folder.displayName)').
+                [Ephemeral RAM-Only Page Inspection — Not Saved to Device]
+                \(snap.domSummary)
+                Console Logs: \(snap.consoleLogs.isEmpty ? "No errors" : snap.consoleLogs.joined(separator: " | "))
+                """
+
+            case .captureBrowserScreenshot:
+                guard let browser = browserService else {
+                    throw ZinoError(.networkFailure, "Browser service is unavailable.")
+                }
+                let snap = await browser.captureEphemeralVisionSnapshot()
+                if let png = snap.inMemoryPNGData {
+                    ephemeralImagePayload = ChatImagePayload(mimeType: "image/png", base64Data: png.base64EncodedString())
+                }
+                output = """
+                [Ephemeral RAM-Only Browser Screenshot & DOM Inspection — Not Saved to Device]
+                \(snap.domSummary)
+                Console Logs:
+                \(snap.consoleLogs.isEmpty ? "(No console errors)" : snap.consoleLogs.joined(separator: "\n"))
+                """
+
+            case .runBrowserJavaScript:
+                guard let browser = browserService else {
+                    throw ZinoError(.networkFailure, "Browser service is unavailable.")
+                }
+                let script = (args["script"] as? String) ?? ""
+                let res = try await browser.evaluateJavaScript(script)
+                output = "Browser JS Result:\n\(res)"
+
+            case .runTerminalCommand:
+                guard let term = terminalService else {
+                    throw ZinoError(.ioFailure, "Terminal service is unavailable.")
+                }
+                let cmd = (args["command"] as? String) ?? ""
+                output = await term.execute(cmd)
+
+            case .githubPlugin:
+                guard let gh = githubPlugin else {
+                    throw ZinoError(.providerNotConfigured, "GitHub plugin service is unavailable.")
+                }
+                let action = ((args["action"] as? String) ?? "whoami").lowercased()
+                let repo = (args["repo"] as? String) ?? gh.defaultRepository
+                switch action {
+                case "whoami":
+                    let user = try await gh.verifyAndFetchUser()
+                    output = "GitHub authenticated as @\(user)."
+                case "list_repos":
+                    let repos = try await gh.listRepositories()
+                    output = repos.map { "\($0.fullName) (\($0.isPrivate ? "private" : "public"))" }.joined(separator: "\n")
+                case "list_files":
+                    let path = (args["path"] as? String) ?? ""
+                    let files = try await gh.listFiles(repoFullName: repo, path: path)
+                    output = files.map { "[\($0.type)] \($0.path) (\($0.size) B)" }.joined(separator: "\n")
+                case "read_file":
+                    let path = (args["path"] as? String) ?? ""
+                    output = try await gh.readFileContent(repoFullName: repo, path: path)
+                case "push_local_file":
+                    let localRel = (args["local_path"] as? String) ?? ""
+                    let remotePath = (args["path"] as? String)?.isEmpty == false ? (args["path"] as! String) : localRel
+                    let commitMsg = (args["message"] as? String) ?? "Update \(remotePath) from ZinoAgent 2.0"
+                    let rootURL = try fileService.bookmarks.resolveURL(for: folder)
+                    let fileURL = try resolveRelative(localRel, in: rootURL)
+                    let data = try Data(contentsOf: fileURL)
+                    output = try await gh.pushFile(repoFullName: repo, remotePath: remotePath, contentData: data, commitMessage: commitMsg)
+                case "list_issues":
+                    let issues = try await gh.listIssues(repoFullName: repo)
+                    output = issues.isEmpty ? "No open issues." : issues.map { "#\($0.number) \($0.title)" }.joined(separator: "\n")
+                case "create_issue":
+                    let title = (args["message"] as? String) ?? "New Issue"
+                    let body = (args["body"] as? String) ?? ""
+                    output = try await gh.createIssue(repoFullName: repo, title: title, body: body)
+                default:
+                    throw ZinoError(.invalidArgument, "Unknown github_plugin action '\(action)'.")
+                }
+
+            case .cloudflarePlugin:
+                guard let cf = cloudflarePlugin else {
+                    throw ZinoError(.providerNotConfigured, "Cloudflare plugin service is unavailable.")
+                }
+                let action = ((args["action"] as? String) ?? "verify").lowercased()
+                switch action {
+                case "verify", "whoami":
+                    output = try await cf.verifyAndDiscoverAccounts()
+                case "list_zones":
+                    let zones = try await cf.listZones()
+                    output = zones.isEmpty ? "No zones found." : zones.map { "\($0.name) [zone_id: \($0.id)] (\($0.status))" }.joined(separator: "\n")
+                case "list_dns":
+                    let zoneID = (args["zone_id"] as? String) ?? ""
+                    let recs = try await cf.listDNSRecords(zoneID: zoneID)
+                    output = recs.map { "\($0.type) \($0.name) -> \($0.content)" }.joined(separator: "\n")
+                case "create_dns":
+                    let zoneID = (args["zone_id"] as? String) ?? ""
+                    let type = (args["dns_type"] as? String) ?? "A"
+                    let name = (args["dns_name"] as? String) ?? ""
+                    let content = (args["dns_content"] as? String) ?? ""
+                    output = try await cf.createDNSRecord(zoneID: zoneID, type: type, name: name, content: content)
+                case "list_workers":
+                    let workers = try await cf.listWorkers()
+                    output = workers.isEmpty ? "No Workers found." : workers.map(\.id).joined(separator: "\n")
+                case "deploy_worker":
+                    let workerName = (args["worker_name"] as? String) ?? ""
+                    let localRel = (args["local_path"] as? String) ?? ""
+                    let rootURL = try fileService.bookmarks.resolveURL(for: folder)
+                    let fileURL = try resolveRelative(localRel, in: rootURL)
+                    let jsCode = try String(contentsOf: fileURL, encoding: .utf8)
+                    output = try await cf.deployWorkerScript(scriptName: workerName, javascriptContent: jsCode)
+                case "list_pages":
+                    let pages = try await cf.listPagesProjects()
+                    output = pages.isEmpty ? "No Pages projects." : pages.joined(separator: "\n")
+                case "list_d1":
+                    let dbs = try await cf.listD1Databases()
+                    output = dbs.isEmpty ? "No D1 databases." : dbs.joined(separator: "\n")
+                default:
+                    throw ZinoError(.invalidArgument, "Unknown cloudflare_plugin action '\(action)'.")
+                }
+
+            default:
+                return executeSyncFilesystemTool(
+                    tool: tool,
+                    args: args,
+                    folder: folder,
+                    conversationID: conversationID,
+                    argumentsJSON: argumentsJSON,
+                    permissionLevel: permissionLevel
+                )
+            }
+
+            permissionService.logToolActivity(
+                conversationID: conversationID,
+                toolName: tool.rawValue,
+                argumentsJSON: argumentsJSON,
+                permissionLevel: permissionLevel,
+                status: "executed",
+                resultSummary: String(output.prefix(240))
+            )
+            return .executed(output: output, ephemeralImage: ephemeralImagePayload)
+        } catch {
+            let reason = error.localizedDescription
+            permissionService.logToolActivity(
+                conversationID: conversationID,
+                toolName: tool.rawValue,
+                argumentsJSON: argumentsJSON,
+                permissionLevel: permissionLevel,
+                status: "error",
+                resultSummary: reason
+            )
+            return .denied(reason: reason)
+        }
+    }
+
+    // MARK: - Synchronous Scoped Filesystem Tools
+
+    private func executeSyncFilesystemTool(
         tool: FileToolName,
         args: [String: Any],
         folder: MountedFolder,
@@ -340,9 +616,19 @@ public final class FileToolExecutor: @unchecked Sendable {
                     throw ZinoError(.invalidArgument, "filename and content are required.")
                 }
                 let dirRel = (args["directory_relative_path"] as? String) ?? ""
+                let allowOverwrite = (args["overwrite"] as? Bool) ?? false
                 let dirURL = try resolveRelative(dirRel, in: rootURL)
-                let created = try fileService.writeNewFile(in: folder, directory: dirURL, filename: filename, content: content, allowOverwrite: false)
-                output = "Created file '\(created.lastPathComponent)' (\(content.utf8.count) bytes) in '\(folder.displayName)'."
+                let created = try fileService.writeNewFile(
+                    in: folder,
+                    directory: dirURL,
+                    filename: filename,
+                    content: content,
+                    allowOverwrite: allowOverwrite
+                )
+                output = "Saved file '\(created.lastPathComponent)' (\(content.utf8.count) bytes) in '\(folder.displayName)'."
+
+            default:
+                throw ZinoError(.invalidArgument, "Tool '\(tool.rawValue)' requires async workspace execution.")
             }
 
             permissionService.logToolActivity(
@@ -353,7 +639,7 @@ public final class FileToolExecutor: @unchecked Sendable {
                 status: "executed",
                 resultSummary: String(output.prefix(240))
             )
-            return .executed(output: output)
+            return .executed(output: output, ephemeralImage: nil)
         } catch {
             let reason = error.localizedDescription
             permissionService.logToolActivity(
@@ -366,6 +652,16 @@ public final class FileToolExecutor: @unchecked Sendable {
             )
             return .denied(reason: reason)
         }
+    }
+
+    private func resolveTargetFolder(requestedName: String?, folders: [MountedFolder]) -> MountedFolder? {
+        guard !folders.isEmpty else { return nil }
+        if let requested = requestedName?.trimmingCharacters(in: .whitespacesAndNewlines), !requested.isEmpty {
+            if let exact = folders.first(where: { $0.displayName.caseInsensitiveCompare(requested) == .orderedSame }) {
+                return exact
+            }
+        }
+        return folders[0]
     }
 
     private func resolveRelative(_ relativePath: String, in rootURL: URL) throws -> URL {
@@ -397,7 +693,15 @@ public final class FileToolExecutor: @unchecked Sendable {
         case .exportFile:
             return "Export '\(args["relative_path"] as? String ?? "?")' from \(folderName)"
         case .generateFile:
-            return "Create new file '\(args["filename"] as? String ?? "?")' in \(folderName)"
+            return "Write file '\(args["filename"] as? String ?? "?")' in \(folderName)"
+        case .runTerminalCommand:
+            return "Run terminal command '\(args["command"] as? String ?? "?")' in \(folderName)"
+        case .runBrowserJavaScript:
+            return "Run JavaScript in Custom Browser"
+        case .githubPlugin:
+            return "GitHub Plugin: \(args["action"] as? String ?? "action")"
+        case .cloudflarePlugin:
+            return "Cloudflare Plugin: \(args["action"] as? String ?? "action")"
         default:
             return "\(tool.displayTitle) in \(folderName)"
         }

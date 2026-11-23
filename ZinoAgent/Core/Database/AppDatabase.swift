@@ -236,6 +236,35 @@ public final class AppDatabase: Sendable {
             CREATE INDEX IF NOT EXISTS idx_threed_projects_opened ON threed_projects(last_opened_at DESC);
             CREATE INDEX IF NOT EXISTS idx_tool_activity_created ON tool_activity_log(created_at DESC);
             """
+        ),
+        DatabaseMigration(
+            version: 3,
+            name: "skills_and_plugins_schema",
+            sql: """
+            CREATE TABLE IF NOT EXISTS workspace_skills (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                slug TEXT NOT NULL,
+                category TEXT NOT NULL,
+                description TEXT NOT NULL,
+                instructions_prompt TEXT NOT NULL,
+                trigger_keywords TEXT NOT NULL,
+                is_enabled INTEGER NOT NULL DEFAULT 1,
+                is_builtin INTEGER NOT NULL DEFAULT 0,
+                updated_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS plugin_configs (
+                id TEXT PRIMARY KEY,
+                plugin_type TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                keychain_account TEXT NOT NULL,
+                account_identifier TEXT,
+                default_target TEXT,
+                is_enabled INTEGER NOT NULL DEFAULT 1,
+                updated_at REAL NOT NULL
+            );
+            """
         )
     ]
 

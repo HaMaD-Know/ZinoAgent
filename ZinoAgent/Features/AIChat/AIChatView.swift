@@ -308,6 +308,19 @@ public struct AIChatView: View {
                     tint: .secondary
                 )
 
+                if coordinator.localHTTPServer.isRunning {
+                    Button {
+                        coordinator.selectedSection = .browser
+                    } label: {
+                        StatusBadge(
+                            "Live Browser (\(coordinator.localHTTPServer.baseURLString))",
+                            icon: "globe",
+                            tint: ZinoTheme.statusPositive
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+
                 if let speed = viewModel.lastSpeedLabel {
                     StatusBadge(speed, icon: "bolt.fill", tint: ZinoTheme.statusPositive)
                 }
@@ -595,6 +608,11 @@ public struct AIChatView: View {
                 Menu {
                     Button { showFileAttachPicker = true } label: {
                         Label("Attach File from Files", systemImage: "doc.badge.plus")
+                    }
+                    Button {
+                        viewModel.attachCurrentBrowserEphemeralScreenshot()
+                    } label: {
+                        Label("Attach Live Browser Snapshot (RAM Only)", systemImage: "globe")
                     }
                 } label: {
                     Image(systemName: "paperclip")

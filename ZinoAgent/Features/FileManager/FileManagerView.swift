@@ -418,6 +418,14 @@ public struct FileManagerView: View {
         if !item.isDirectory {
             Button { viewModel.askAIAbout(item) } label: { Label("Ask AI About File", systemImage: "sparkles") }
         }
+        if ["html", "htm"].contains(item.fileExtension.lowercased()), let folder = viewModel.selectedFolder {
+            Button {
+                _ = try? coordinator.browserService.serveAndOpenFile(relativePath: item.name, in: folder)
+                coordinator.selectedSection = .browser
+            } label: {
+                Label("Serve & Open in Custom Browser", systemImage: "globe")
+            }
+        }
         if item.isThreeDModel {
             Button { viewModel.openInThreeDStudio(item) } label: { Label("Open in 3D Studio", systemImage: "cube") }
         }

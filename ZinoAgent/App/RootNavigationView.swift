@@ -83,11 +83,11 @@ public struct RootNavigationView: View {
                                 tint: coordinator.settings.defaultAIMode == .offline ? ZinoTheme.statusPositive : ZinoTheme.statusInfo
                             )
                             Spacer()
-                            if coordinator.resourceMonitor.snapshot.thermalLevel.isElevated {
+                            if coordinator.localHTTPServer.isRunning {
                                 StatusBadge(
-                                    coordinator.resourceMonitor.snapshot.thermalLevel.displayName,
-                                    icon: "thermometer.high",
-                                    tint: ZinoTheme.statusWarning
+                                    ":\(coordinator.localHTTPServer.port)",
+                                    icon: "globe",
+                                    tint: ZinoTheme.statusPositive
                                 )
                             }
                         }
@@ -107,7 +107,7 @@ public struct RootNavigationView: View {
             }
             .listStyle(.sidebar)
             .navigationTitle("Workspace")
-            .navigationSplitViewColumnWidth(min: 215, ideal: 245, max: 290)
+            .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 295)
         } detail: {
             sectionView(for: coordinator.selectedSection)
         }
@@ -115,33 +115,11 @@ public struct RootNavigationView: View {
 
     private var compactTabLayout: some View {
         TabView(selection: $coordinator.selectedSection) {
-            HomeView(coordinator: coordinator)
-                .tabItem { Label(NavigationSection.home.title, systemImage: NavigationSection.home.iconName) }
-                .tag(NavigationSection.home)
-
-            FileManagerView(coordinator: coordinator)
-                .tabItem { Label(NavigationSection.files.title, systemImage: NavigationSection.files.iconName) }
-                .tag(NavigationSection.files)
-
-            AIChatView(coordinator: coordinator)
-                .tabItem { Label(NavigationSection.aiChat.title, systemImage: NavigationSection.aiChat.iconName) }
-                .tag(NavigationSection.aiChat)
-
-            ThreeDStudioView(coordinator: coordinator)
-                .tabItem { Label(NavigationSection.threeDStudio.title, systemImage: NavigationSection.threeDStudio.iconName) }
-                .tag(NavigationSection.threeDStudio)
-
-            ImageStudioView(coordinator: coordinator)
-                .tabItem { Label(NavigationSection.imageStudio.title, systemImage: NavigationSection.imageStudio.iconName) }
-                .tag(NavigationSection.imageStudio)
-
-            ModelManagerView(coordinator: coordinator)
-                .tabItem { Label(NavigationSection.models.title, systemImage: NavigationSection.models.iconName) }
-                .tag(NavigationSection.models)
-
-            SettingsView(coordinator: coordinator)
-                .tabItem { Label(NavigationSection.settings.title, systemImage: NavigationSection.settings.iconName) }
-                .tag(NavigationSection.settings)
+            ForEach(NavigationSection.allCases) { section in
+                sectionView(for: section)
+                    .tabItem { Label(section.title, systemImage: section.iconName) }
+                    .tag(section)
+            }
         }
     }
 
@@ -154,6 +132,12 @@ public struct RootNavigationView: View {
             FileManagerView(coordinator: coordinator)
         case .aiChat:
             AIChatView(coordinator: coordinator)
+        case .browser:
+            BrowserStudioView(coordinator: coordinator)
+        case .terminal:
+            TerminalView(coordinator: coordinator)
+        case .skillsAndPlugins:
+            SkillsPluginsView(coordinator: coordinator)
         case .threeDStudio:
             ThreeDStudioView(coordinator: coordinator)
         case .imageStudio:

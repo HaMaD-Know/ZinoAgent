@@ -75,6 +75,9 @@ targets:
       - sdk: Photos.framework
       - sdk: Security.framework
       - sdk: BackgroundTasks.framework
+      - sdk: WebKit.framework
+      - sdk: Network.framework
+      - sdk: JavaScriptCore.framework
 
   ZinoAgentUnitTests:
     type: bundle.unit-test
